@@ -8,8 +8,8 @@ from datetime import datetime
 api = HfApi(token=os.getenv("HF_TOKEN"))
 
 # Output directories
-os.makedirs("model_readmes", exist_ok=True)
-os.makedirs("model_metadata", exist_ok=True)
+os.makedirs("model_readmes_download_ranks", exist_ok=True)
+os.makedirs("model_metadata_download_ranks", exist_ok=True)
 
 def safe_model_info(model):
     return {
@@ -41,8 +41,8 @@ def process_model(model):
     model_id = model.modelId
     filename_safe_id = model_id.replace("/", "__")
 
-    metadata_path = f"model_metadata/{filename_safe_id}.json"
-    readme_path = f"model_readmes/{filename_safe_id}.md"
+    metadata_path = f"model_metadata_download_ranks/{filename_safe_id}.json"
+    readme_path = f"model_readmes_download_ranks/{filename_safe_id}.md"
 
     # Skip if metadata already exists
     if os.path.exists(metadata_path):
@@ -54,7 +54,6 @@ def process_model(model):
 
     try:
         model_info = api.model_info(model_id)
-        breakpoint()
         metadata["trainedDataset"] = get_trained_dataset(model_info)
         metadata["baseModel"] = get_base_model(model_info)
     except Exception as e:
@@ -68,10 +67,11 @@ def process_model(model):
     # Save README
     if not os.path.exists(readme_path):
         try:
-            hf_path = hf_hub_download(repo_id=model_id, filename="README.md", repo_type="model")
+            hf_path = hf_hub_download(repo_id=model.modelId, filename="README.md", repo_type="model", force_download=True)
+            print(readme_path)
             with open(hf_path, "r", encoding="utf-8") as f_in, open(readme_path, "w", encoding="utf-8") as f_out:
                 f_out.write(f_in.read())
-            print(f"✓ Saved README for {model_id}")
+            print(f"✓ Saved README for {hf_path}")
         except Exception as e:
             print(f"✗ No README for {model_id}: {e}")
     else:
@@ -80,7 +80,7 @@ def process_model(model):
     time.sleep(0.2)
 
 # Main loop
-models = api.list_models(filter="text-classification")
+models = api.list_models(sort='downloads')
 for model in models:
     print(f"Processing {model.modelId}")
     process_model(model)

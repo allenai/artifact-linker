@@ -27,7 +27,7 @@ def ask_gpt4o_for_eval_dataset(readme_text):
     )
     try:
         response = completion(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": readme_text[:12000]}
@@ -36,7 +36,7 @@ def ask_gpt4o_for_eval_dataset(readme_text):
         )
         return response["choices"][0]["message"]["content"]
     except Exception as e:
-        print(f"✗ GPT-4o error: {e}")
+        print(f"✗ GPT-4o-mini error: {e}")
         return "{}"
 
 def process_single_file(filename, pbar=None):
@@ -144,4 +144,4 @@ def main(max_workers=5):
 if __name__ == "__main__":
     # You can adjust max_workers based on your API rate limits
     # For GPT-4o, start with 3-5 workers to avoid rate limiting
-    main(max_workers=)
+    main(max_workers=4)
