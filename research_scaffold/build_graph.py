@@ -23,7 +23,7 @@ def load_model_dataset_graph(data_dir: str) -> nx.Graph:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             
-            with open('model_metadata/{}.json'.format(model_id), 'r', encoding='utf-8') as f:
+            with open('model_metadata_download_ranks/{}.json'.format(model_id), 'r', encoding='utf-8') as f:
                 model_metadata = json.load(f)
             
             if model_metadata['downloads'] < 1000:
@@ -112,7 +112,7 @@ def visualize_graph_interactive(G: nx.Graph, output_file="model_dataset_graph.ht
     print(f"✅ Graph saved to {output_file}")
 
 def main():
-    data_dir = "eval_datasets_json"
+    data_dir = "eval_datasets_json_download_ranks"
     G = load_model_dataset_graph(data_dir)
     print(f"Graph loaded with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
 

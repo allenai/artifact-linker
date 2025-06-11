@@ -5,8 +5,8 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-readme_dir = "model_readmes"
-output_dir = "eval_datasets_json"
+readme_dir = "model_readmes_download_ranks"
+output_dir = "eval_datasets_json_download_ranks"
 os.makedirs(output_dir, exist_ok=True)
 
 # Thread-safe progress bar
