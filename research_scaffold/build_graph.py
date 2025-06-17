@@ -25,7 +25,17 @@ def load_model_dataset_graph(data_dir: str) -> nx.Graph:
             
             with open('model_metadata_download_ranks/{}.json'.format(model_id), 'r', encoding='utf-8') as f:
                 model_metadata = json.load(f)
-            
+
+            has_paper_or_not = False
+            tags = model_metadata.get('tags', [])
+            for tag in tags:
+                if tag.startswith('arxiv:'):
+                    has_paper_or_not = True
+                    break
+            if not has_paper_or_not:
+                print(f"✗ {model_id} does not have a paper.")
+                continue
+
             if model_metadata['downloads'] < 1000:
                 continue
             if not isinstance(data, dict):
@@ -33,6 +43,7 @@ def load_model_dataset_graph(data_dir: str) -> nx.Graph:
         except Exception as e:
             print(f"✗ Failed to load {model_id}: {e}")
             continue
+
         for dataset in data.keys():
             dataset_name = dataset.split("/")[-1].lower() if "/" in dataset else dataset.lower()
             if dataset_name not in dataset_names:
@@ -116,10 +127,16 @@ def main():
     G = load_model_dataset_graph(data_dir)
     print(f"Graph loaded with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
 
-    #G_sub = get_subgraph(G)
-    print(f"Subgraph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
+    # Count model and dataset nodes
+    types = nx.get_node_attributes(G, "type")
+    model_nodes = [n for n, t in types.items() if t == MODEL]
+    dataset_nodes = [n for n, t in types.items() if t == DATASET]
+    print(f"✓ Model nodes: {len(model_nodes)}")
+    print(f"✓ Dataset nodes: {len(dataset_nodes)}")
 
+    # G_sub = get_subgraph(G)
     visualize_graph_interactive(G)
+
 
 if __name__ == "__main__":
     main()

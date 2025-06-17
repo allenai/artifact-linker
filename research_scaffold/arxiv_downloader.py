@@ -314,6 +314,7 @@ def collect_ids(input_dir: str) -> List[str]:
                             ids_to_download.append(arxiv_id)
             except Exception as e:
                 print(f"[Warning] Failed to read {file_path}: {e}")
+    ids_to_download = list(set(ids_to_download))
     return ids_to_download
 
 # Step 2: Define function for downloading (needs to be global for multiprocessing)
@@ -331,7 +332,7 @@ if __name__ == "__main__":
     print(f"[Info] Found {len(ids)} arXiv IDs to download.")
 
     results = []
-    with ProcessPoolExecutor(max_workers=8) as executor:  # Tune workers as needed
+    with ProcessPoolExecutor(max_workers=16) as executor:  # Tune workers as needed
         futures = {executor.submit(download_single_arxiv, arxiv_id): arxiv_id for arxiv_id in ids}
         for future in tqdm(as_completed(futures), total=len(futures)):
             result = future.result()
