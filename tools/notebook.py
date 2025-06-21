@@ -497,6 +497,23 @@ def CodingEnvironment(env_type: str, **kwargs) -> Tuple[Any, Any]:
     Raises:
         ValueError when unknown `env_type` is passed.
 
+    >>> env, executor = CodingEnvironment(
+           env_type="notebook", 
+           run_docker=True  # <--- turn to `False` to run locally
+    )
+    >>> notebook = executor()
+    >>> notebook("a = 20")
+    >>> output = notebook("print(a)")
+    >>> assert output.strip() == "20"
+    
+    >>> new_notebook = executor()  ## create another one
+    >>> new_notebook("a = 100")
+    >>> output = new_notebook("print(a)")
+    >>> assert output.strip() == "100"
+    >>> work_dir = new_notebook("!pwd")  ## bash
+    
+    ## close jupyter, container, etc.
+    >>> env.close()
     """
     exc_class = CODING_ENVS.get(env_type, None)
     if exc_class is None:
@@ -505,22 +522,43 @@ def CodingEnvironment(env_type: str, **kwargs) -> Tuple[Any, Any]:
     env, executor = exc_class.setup(**kwargs)
     return (env, executor)
 
+def test_local_jupyter():
+    """Run code execution inside of jupyter running on the local computer"""
+    env, executor = CodingEnvironment(
+        env_type="notebook", run_docker=False
+    )
+    notebook = executor()  ## create new notebook instance
+    notebook("a = 20")
+    output = notebook("print(a)")
+    assert output.strip() == "20"
 
-## local jupyter coder
-env, executor = CodingEnvironment(
-    env_type="notebook", run_docker=True  # <--- turn to `False` to run locally
-)
+    new_notebook = executor()  ## create another one
+    new_notebook("a = 100")
+    output = new_notebook("print(a)")
+    assert output.strip() == "100"
+    work_dir = new_notebook("!pwd")  ## bash
 
-notebook = executor()  ## create new notebook instance
-notebook("a = 20")
-output = notebook("print(a)")
-assert output.strip() == "20"
+    env.close()
 
-new_notebook = executor()  ## create another one
-new_notebook("a = 100")
-output = new_notebook("print(a)")
-assert output.strip() == "100"
-work_dir = new_notebook("!pwd")  ## bash
+def test_docker_jupyter():
+    """Run code execution inside of jupyter running on the local computer"""
+    env, executor = CodingEnvironment(
+        env_type="notebook", run_docker=True
+    )
+    notebook = executor()  ## create new notebook instance
+    notebook("a = 20")
+    output = notebook("print(a)")
+    assert output.strip() == "20"
 
-## close jupyter, container, etc.
-env.close()
+    new_notebook = executor()  ## create another one
+    new_notebook("a = 100")
+    output = new_notebook("print(a)")
+    assert output.strip() == "100"
+    work_dir = new_notebook("!pwd")  ## bash
+
+    env.close()
+    
+    
+if __name__ == "__main__":
+    test_local_jupyter()
+    test_docker_jupyter()
