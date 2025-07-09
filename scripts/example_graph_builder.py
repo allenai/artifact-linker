@@ -16,9 +16,9 @@ def main():
     hf_token = os.getenv("HF_TOKEN")
     G = load_artifact_graph(
         models_dir="output/models/metadata",
-        datasets_dir="output/datasets/metadata", 
+        datasets_dir="output/datasets/metadata",
         metrics_dir="output/metrics",
-        hf_token=hf_token
+        hf_token=hf_token,
     )
 
     total_nodes = G.number_of_nodes()

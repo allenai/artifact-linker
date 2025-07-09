@@ -8,7 +8,7 @@ This project has been refactored into a modular code structure that separates da
 
 ```
 artifact_graph/
-├── collectors/              # Data collectors  
+├── collectors/              # Data collectors
 │   ├── model_collector.py         # Model information collection (HF + local loading)
 │   ├── dataset_collector.py       # Dataset information collection (HF + local loading)
 │   └── metric_collector.py        # Metric collection and computation
@@ -38,7 +38,7 @@ artifact_graph/
 
 #### ModelCollector
 - **Function**: Collect model metadata information
-- **Main methods**: 
+- **Main methods**:
   - `collect_model_info(model_id)`: Collect single model information
   - `collect_all_models(min_downloads)`: Collect all model information
 
@@ -73,7 +73,7 @@ artifact_graph/
 #### LLM Models
 - **File**: `models/llm/llm_link_predictor.py`
 - **Function**: Use LLM for link prediction
-- **Supported modes**: 
+- **Supported modes**:
   - `simple`: Simple mode, only use model name and dataset name
   - `neighborhood`: Neighborhood mode, include neighbor information
 
@@ -183,4 +183,4 @@ data = prepare_link_pred_splits(data, val_ratio, test_ratio)
 
 1. Create new model file in `models/` directory
 2. Implement necessary interfaces
-3. Export in corresponding `__init__.py` 
+3. Export in corresponding `__init__.py`

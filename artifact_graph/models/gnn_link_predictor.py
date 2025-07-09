@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.utils import negative_sampling
+
 
 class GATEncoder(nn.Module):
     def __init__(self, in_channels, hidden_channels, heads=4, num_layers=2, dropout=0.6):

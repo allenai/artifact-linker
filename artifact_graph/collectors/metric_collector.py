@@ -1,14 +1,17 @@
 import json
-from pathlib import Path
-from typing import Any, Dict, List, Optional
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 from litellm import completion
+from tqdm import tqdm
+
 
 def ensure_directory(path: Path) -> None:
     """Ensure that a directory exists."""
     path.mkdir(parents=True, exist_ok=True)
+
 
 class MetricCollector:
     """
@@ -31,9 +34,9 @@ class MetricCollector:
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text[:12000]}
+                    {"role": "user", "content": text[:12000]},
                 ],
-                temperature=0
+                temperature=0,
             )
             content = resp["choices"][0]["message"]["content"]
             # Remove code fences if present
@@ -42,7 +45,9 @@ class MetricCollector:
         except Exception:
             return {}
 
-    def process_readme(self, readme_path: Path, output_dir: Path, pbar: Optional[tqdm] = None) -> str:
+    def process_readme(
+        self, readme_path: Path, output_dir: Path, pbar: Optional[tqdm] = None
+    ) -> str:
         """
         Parses a single README.md file and saves extracted metrics to JSON.
         """
@@ -55,7 +60,9 @@ class MetricCollector:
                 text = readme_path.read_text(encoding="utf-8")
                 metrics = self._ask_gpt(text)
                 ensure_directory(output_dir)
-                output_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+                output_path.write_text(
+                    json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
                 msg = f"Processed {model_id}"
             except Exception:
                 output_path.write_text("{}", encoding="utf-8")
@@ -79,8 +86,7 @@ class MetricCollector:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             with tqdm(total=len(files), desc="Processing") as pbar:
                 futures = [
-                    executor.submit(self.process_readme, path, output_dir, pbar)
-                    for path in files
+                    executor.submit(self.process_readme, path, output_dir, pbar) for path in files
                 ]
                 for future in as_completed(futures):
                     future.result()
@@ -88,26 +94,19 @@ class MetricCollector:
     def collect_one(self, readme_path: Path) -> Dict[str, Any]:
         """
         Process a single README file and return metrics without saving.
-        
+
         Args:
             readme_path: Path to the README.md file to process.
-            
+
         Returns:
             Dict containing metrics and readme path.
         """
         try:
             text = readme_path.read_text(encoding="utf-8")
             metrics = self._ask_gpt(text)
-            return {
-                "metrics": metrics,
-                "readme_path": str(readme_path)
-            }
+            return {"metrics": metrics, "readme_path": str(readme_path)}
         except Exception as e:
-            return {
-                "metrics": {},
-                "readme_path": str(readme_path),
-                "error": str(e)
-            }
+            return {"metrics": {}, "readme_path": str(readme_path), "error": str(e)}
 
     def save_metrics_file(
         self,
@@ -139,7 +138,6 @@ class MetricCollector:
         metrics_path = Path(metrics_dir)
         if not metrics_path.exists():
             return results
-        
         for file in metrics_path.glob("*.json"):
             try:
                 data = json.loads(file.read_text(encoding="utf-8"))

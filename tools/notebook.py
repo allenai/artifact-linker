@@ -1,21 +1,17 @@
-import uuid
-import base64
-import signal
-import logging
 import datetime
-import traceback
-import sys
-import docker
 import json
-import time
-import threading
-import requests
+import logging
+import signal
 import subprocess
-import weakref
-from textwrap import dedent
-from pathlib import Path
+import time
+import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple, Union, Type, TypeVar, Callable, Optional
+from pathlib import Path
+from textwrap import dedent
+from typing import Any, Callable, Dict, Optional, Tuple, Type, TypeVar, Union
+
+import docker
+import requests
 from websocket import create_connection
 
 logging.basicConfig(level=logging.INFO)
@@ -116,10 +112,8 @@ def launch_docker_jupyter(
     build_new_image = False
     try:
         client = docker.from_env()
-    except docker.errors.DockerException as e:
-        raise RuntimeError(
-            "Could not connect to Docker daemon: make sure Docker is running."
-        )
+    except docker.errors.DockerException:
+        raise RuntimeError("Could not connect to Docker daemon: make sure Docker is running.")
 
     try:
         client.images.get(image_name)
@@ -130,18 +124,16 @@ def launch_docker_jupyter(
     try:
         if build_new_image:
             dockerfile_path = Path(__file__).parent / "Dockerfile"
-            logger.info(
-                f"Building image: {image_name} with docker file: {dockerfile_path}"
-            )
+            logger.info(f"Building image: {image_name} with docker file: {dockerfile_path}")
 
             with open(dockerfile_path, "w") as f:
                 f.write(
                     dedent(
                         f"""\
                         FROM python:3.11-slim
-                        
+
                         RUN pip install jupyter_kernel_gateway jupyter_client ipykernel
-                    
+
                         EXPOSE {port}
                         CMD ["jupyter", "kernelgateway", "--KernelGatewayApp.ip='0.0.0.0'", "--KernelGatewayApp.port={port}", "--KernelGatewayApp.allow_origin='*'"]
                         """
@@ -201,7 +193,7 @@ class CodeExecutor:
             command: The command to execute.
 
         """
-        raise NotImplemented
+        raise NotImplementedError
 
     @classmethod
     def setup(cls: Type[C], **kwargs) -> Tuple[Environment, Type[C]]:
@@ -265,13 +257,13 @@ def timeout_call(
     if timeout_seconds is None:
         return function(*args, **kwargs)
     if not hasattr(signal, "SIGALRM"):
-        logger.warning(
-            "*** WARNING: timeout_call is not supported on this platform. ***"
-        )
+        logger.warning("*** WARNING: timeout_call is not supported on this platform. ***")
         return function(*args, **kwargs)
 
     timeout_seconds = int(timeout_seconds)
-    timeout_message = f"Function {function.__name__} execution timed out after {timeout_seconds} seconds."
+    timeout_message = (
+        f"Function {function.__name__} execution timed out after {timeout_seconds} seconds."
+    )
 
     def timeout_handler(signum: int, frame: Any) -> None:
         raise TimeoutError(timeout_message)
@@ -302,7 +294,7 @@ class Notebook(CodeExecutor):
         self._jupyter_server = None
         self._kernel_id = None
         self.ws = None
-        self._headers = {"Authorization": f"Token password"}
+        self._headers = {"Authorization": "Token password"}
         self.timed_out_unanswered = False
         self._intermediate_output = []
         self._msgs_history = []
@@ -372,9 +364,7 @@ class Notebook(CodeExecutor):
         protocol = "http"
         url = f"{protocol}://{self._jupyter_server}/api/kernels/{self.kernel_id}/interrupt"
         with requests.post(url) as response:
-            assert (
-                response.status_code == 204
-            ), f"Failed to interrupt the kernel: {response}"
+            assert response.status_code == 204, f"Failed to interrupt the kernel: {response}"
         self._create_connection()
         self.timed_out_unanswered = False
         self.run_command("pass")
@@ -410,7 +400,7 @@ class Notebook(CodeExecutor):
 
         try:
             return timeout_call(self.retrieve_output, self._timeout_per_command)
-        except TimeoutError as e:
+        except TimeoutError:
             self.timed_out()
             return "".join(self._intermediate_output)
 
@@ -471,7 +461,7 @@ class Notebook(CodeExecutor):
                         )
                         self.ws.settimeout(5)
                         continue
-                except Exception as e:
+                except Exception:
                     break
                 break
         return "".join(self._intermediate_output)
@@ -498,20 +488,20 @@ def CodingEnvironment(env_type: str, **kwargs) -> Tuple[Any, Any]:
         ValueError when unknown `env_type` is passed.
 
     >>> env, executor = CodingEnvironment(
-           env_type="notebook", 
+           env_type="notebook",
            run_docker=True  # <--- turn to `False` to run locally
     )
     >>> notebook = executor()
     >>> notebook("a = 20")
     >>> output = notebook("print(a)")
     >>> assert output.strip() == "20"
-    
+
     >>> new_notebook = executor()  ## create another one
     >>> new_notebook("a = 100")
     >>> output = new_notebook("print(a)")
     >>> assert output.strip() == "100"
     >>> work_dir = new_notebook("!pwd")  ## bash
-    
+
     ## close jupyter, container, etc.
     >>> env.close()
     """
@@ -522,11 +512,10 @@ def CodingEnvironment(env_type: str, **kwargs) -> Tuple[Any, Any]:
     env, executor = exc_class.setup(**kwargs)
     return (env, executor)
 
+
 def test_local_jupyter():
     """Run code execution inside of jupyter running on the local computer"""
-    env, executor = CodingEnvironment(
-        env_type="notebook", run_docker=False
-    )
+    env, executor = CodingEnvironment(env_type="notebook", run_docker=False)
     notebook = executor()  ## create new notebook instance
     notebook("a = 20")
     output = notebook("print(a)")
@@ -539,12 +528,11 @@ def test_local_jupyter():
     work_dir = new_notebook("!pwd")  ## bash
 
     env.close()
+
 
 def test_docker_jupyter():
     """Run code execution inside of jupyter running on the local computer"""
-    env, executor = CodingEnvironment(
-        env_type="notebook", run_docker=True
-    )
+    env, executor = CodingEnvironment(env_type="notebook", run_docker=True)
     notebook = executor()  ## create new notebook instance
     notebook("a = 20")
     output = notebook("print(a)")
@@ -557,8 +545,8 @@ def test_docker_jupyter():
     work_dir = new_notebook("!pwd")  ## bash
 
     env.close()
-    
-    
+
+
 if __name__ == "__main__":
     test_local_jupyter()
     test_docker_jupyter()

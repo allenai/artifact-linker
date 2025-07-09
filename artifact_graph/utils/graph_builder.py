@@ -1,8 +1,8 @@
-import networkx as nx
-from pathlib import Path
-from typing import Optional, Dict
+from typing import Any, Dict, Optional
 
-from ..collectors import ModelCollector, DatasetCollector, MetricCollector
+import networkx as nx
+
+from ..collectors import DatasetCollector, MetricCollector, ModelCollector
 
 MODEL_NODE = "model"
 DATASET_NODE = "dataset"
@@ -44,9 +44,7 @@ def load_artifact_graph(
     metrics = MetricCollector.load_all_metrics(metrics_dir)
 
     # Map normalized dataset names -> full IDs
-    name_map: Dict[str, str] = {
-        ds_id.split('/')[-1].lower(): ds_id for ds_id in datasets
-    }
+    name_map: Dict[str, str] = {ds_id.split("/")[-1].lower(): ds_id for ds_id in datasets}
 
     for model_id, meta in models.items():
         # Only include models with a linked paper
@@ -64,7 +62,7 @@ def load_artifact_graph(
             if not isinstance(ds_metrics, dict):
                 continue
 
-            norm = ds_key.split('/')[-1].lower()
+            norm = ds_key.split("/")[-1].lower()
             ds_id = name_map.get(norm)
             if not ds_id:
                 continue
@@ -83,7 +81,7 @@ def load_artifact_graph(
     return G
 
 
-def load_pyg_graph_from_networkx(G: nx.Graph) -> 'Data':
+def load_pyg_graph_from_networkx(G: nx.Graph) -> Any:
     """
     Convert a NetworkX bipartite graph to a PyTorch Geometric Data object.
 
@@ -93,12 +91,12 @@ def load_pyg_graph_from_networkx(G: nx.Graph) -> 'Data':
     Returns:
       Data(x, edge_index, edge_attr, model_names, dataset_names)
     """
-    from torch_geometric.data import Data
     import torch
+    from torch_geometric.data import Data
 
     nodes = list(G.nodes)
     idx_map = {n: i for i, n in enumerate(nodes)}
-    types = [G.nodes[n]['type'] for n in nodes]
+    types = [G.nodes[n]["type"] for n in nodes]
 
     model_idxs = [i for i, t in enumerate(types) if t == MODEL_NODE]
     dataset_idxs = [i for i, t in enumerate(types) if t == DATASET_NODE]
@@ -113,7 +111,7 @@ def load_pyg_graph_from_networkx(G: nx.Graph) -> 'Data':
     for u, v, data in G.edges(data=True):
         u_i, v_i = idx_map[u], idx_map[v]
         edge_list.append([u_i, v_i])
-        first_val = next(iter(data.get('metrics', {}).values()), 0.0)
+        first_val = next(iter(data.get("metrics", {}).values()), 0.0)
         attr_list.append(float(first_val))
 
     edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()

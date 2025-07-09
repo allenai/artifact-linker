@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -114,7 +114,9 @@ class DatasetCollector:
         return results
 
     @staticmethod
-    def load_metadata(dataset_id: str, metadata_dir: str = "dataset_metadata") -> Optional[Dict[str, Any]]:
+    def load_metadata(
+        dataset_id: str, metadata_dir: str = "dataset_metadata"
+    ) -> Optional[Dict[str, Any]]:
         """Load saved metadata JSON for a given dataset ID."""
         fname = dataset_id.replace("/", "__") + ".json"
         path = Path(metadata_dir) / fname
@@ -132,13 +134,15 @@ class DatasetCollector:
         return path.read_bytes()
 
     @staticmethod
-    def load_all_metadata(metadata_dir: str = "dataset_metadata", min_downloads: int = 1000) -> Dict[str, Dict[str, Any]]:
+    def load_all_metadata(
+        metadata_dir: str = "dataset_metadata", min_downloads: int = 1000
+    ) -> Dict[str, Dict[str, Any]]:
         """Load all metadata files from directory and filter by downloads."""
         results = {}
         metadata_path = Path(metadata_dir)
         if not metadata_path.exists():
             return results
-        
+
         for file in metadata_path.glob("*.json"):
             try:
                 data = json.loads(file.read_text(encoding="utf-8"))
