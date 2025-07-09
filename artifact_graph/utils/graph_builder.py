@@ -2,7 +2,7 @@ import os
 import json
 import random
 import networkx as nx
-from .graph_builder import visualize_graph_interactive
+from .graph_visualizer import visualize_graph_interactive
 
 MODEL, DATASET = "model", "dataset"
 
@@ -83,8 +83,6 @@ def main():
     dataset_nodes = [n for n, t in types.items() if t == DATASET]
     print(f"✓ Model nodes: {len(model_nodes)}")
     print(f"✓ Dataset nodes: {len(dataset_nodes)}")
-
-    # G_sub = get_subgraph(G)
     visualize_graph_interactive(G)
 
 
