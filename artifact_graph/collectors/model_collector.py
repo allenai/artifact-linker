@@ -1,0 +1,152 @@
+import os
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+from huggingface_hub import HfApi, hf_hub_download
+
+
+def ensure_directory(path: Path) -> None:
+    """Create directory if it doesn't exist."""
+    path.mkdir(parents=True, exist_ok=True)
+
+
+class ModelCollector:
+    def __init__(
+        self,
+        metadata_dir: str,
+        hf_token: Optional[str] = None,
+    ) -> None:
+        self.metadata_dir = Path(metadata_dir)
+        self.token = hf_token or os.getenv("HF_TOKEN")
+        if not self.token:
+            raise ValueError("HF_TOKEN must be provided or set as env var.")
+        self.api = HfApi(token=self.token)
+
+    def _extract_model_info(self, model) -> Dict[str, Any]:
+        """Extracts selected fields from a model listing entry."""
+        return {
+            "modelId": model.id,
+            "sha": getattr(model, "sha", None),
+            "lastModified": getattr(model, "lastModified", ""),
+            "pipeline_tag": getattr(model, "pipeline_tag", None),
+            "tags": getattr(model, "tags", []),
+            "likes": getattr(model, "likes", None),
+            "downloads": getattr(model, "downloads", None),
+            "private": getattr(model, "private", False),
+            "author": getattr(model, "author", None),
+        }
+
+    def _safe_card_field(self, info: Any, field: str) -> Any:
+        """Safely retrieve a field from model card metadata."""
+        try:
+            return getattr(info.card_data, field)
+        except Exception:
+            return None
+
+    def collect_metadata(self, model_id: str) -> Dict[str, Any]:
+        """
+        Fetches and returns metadata for a single model.
+        """
+        matching = list(self.api.list_models(filter=model_id))
+        if not matching:
+            raise ValueError(f"Model '{model_id}' not found.")
+        model_summary = matching[0]
+        detailed = self.api.model_info(model_id)
+        meta = self._extract_model_info(model_summary)
+        trained_ds = self._safe_card_field(detailed, "datasets")
+        base = self._safe_card_field(detailed, "base_model")
+        meta["trainedDataset"] = (
+            trained_ds if isinstance(trained_ds, list) else ([trained_ds] if trained_ds else [])
+        )
+        meta["baseModel"] = base
+        return meta
+
+    def download_readme(self, model_id: str) -> Optional[bytes]:
+        """Download README.md for a model and return its bytes, without saving."""
+        try:
+            src = hf_hub_download(
+                repo_id=model_id,
+                filename="README.md",
+                repo_type="model",
+                token=self.token,
+            )
+            return Path(src).read_bytes()
+        except Exception:
+            return None
+
+    def save_metadata(
+        self,
+        model_id: str,
+        metadata: Dict[str, Any],
+        metadata_dir: str = "model_metadata",
+    ) -> Path:
+        """Save metadata dict to a JSON file."""
+        out_dir = Path(metadata_dir)
+        ensure_directory(out_dir)
+        fname = model_id.replace("/", "__") + ".json"
+        path = out_dir / fname
+        path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def save_readme(
+        self,
+        model_id: str,
+        readme_bytes: bytes,
+        readme_dir: str = "model_readmes",
+    ) -> Path:
+        """Save README bytes to a markdown file."""
+        out_dir = Path(readme_dir)
+        ensure_directory(out_dir)
+        fname = model_id.replace("/", "__") + "_README.md"
+        path = out_dir / fname
+        path.write_bytes(readme_bytes)
+        return path
+
+    def collect_one(
+        self,
+        model_id: str,
+    ) -> Dict[str, Union[Dict[str, Any], Optional[bytes]]]:
+        """Collect metadata and readme content without saving files."""
+        metadata = self.collect_metadata(model_id)
+        readme_bytes = self.download_readme(model_id)
+        return {"metadata": metadata, "readme": readme_bytes}
+
+    def collect_batch(
+        self,
+        model_ids: List[str],
+        pause: float = 0.2,
+    ) -> Dict[str, Any]:
+        """Iterates over a list of model IDs and collects each one."""
+        results = {}
+        for mid in model_ids:
+            try:
+                results[mid] = self.collect_one(mid)
+            except Exception as e:
+                results[mid] = {"error": str(e)}
+            time.sleep(pause)
+        return results
+
+    def load_metadata(self, model_id: str) -> Optional[Dict[str, Any]]:
+        """Loads saved metadata JSON for a given model ID."""
+        fname = model_id.replace("/", "__") + ".json"
+        path = self.metadata_dir / fname
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def filter_loaded(
+        self,
+        min_downloads: int = 1000,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Returns loaded metadata for models meeting a download threshold."""
+        results = {}
+        ensure_directory(self.metadata_dir)
+        for file in self.metadata_dir.glob("*.json"):
+            data = json.loads(file.read_text(encoding="utf-8"))
+            if data.get("downloads", 0) >= min_downloads:
+                model_id = file.stem.replace("__", "/")
+                results[model_id] = data
+        return results
