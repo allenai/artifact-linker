@@ -1,6 +1,8 @@
 import os
+
 import openai
 import torch
+
 
 class OpenAIGPTLinkPredictor:
     def __init__(self, model_name="gpt-3.5-turbo", api_key=None):
@@ -8,7 +10,16 @@ class OpenAIGPTLinkPredictor:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = openai.OpenAI(api_key=self.api_key)
 
-    def _build_prompt(self, model_name, dataset_name, model_card=None, dataset_card=None, model_neighbors=None, dataset_neighbors=None, mode="simple"):
+    def _build_prompt(
+        self,
+        model_name,
+        dataset_name,
+        model_card=None,
+        dataset_card=None,
+        model_neighbors=None,
+        dataset_neighbors=None,
+        mode="simple",
+    ):
         if mode == "simple":
             prompt = f"Given a machine learning model named '{model_name}' and a dataset named '{dataset_name}'"
             if model_card:
@@ -23,7 +34,7 @@ class OpenAIGPTLinkPredictor:
                 prompt += f"\nModel card: {model_card}"
             if dataset_card:
                 prompt += f"\nDataset card: {dataset_card}"
-            prompt += f"\nThe model's performance on other datasets:\n"
+            prompt += "\nThe model's performance on other datasets:\n"
             if model_neighbors:
                 for ds, acc in model_neighbors:
                     prompt += f"- {ds}: {acc:.2f}\n"
@@ -43,7 +54,16 @@ class OpenAIGPTLinkPredictor:
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
-    def predict(self, edge_pairs, node_names, G=None, model_cards=None, dataset_cards=None, batch_size=5, mode="simple"):
+    def predict(
+        self,
+        edge_pairs,
+        node_names,
+        G=None,
+        model_cards=None,
+        dataset_cards=None,
+        batch_size=5,
+        mode="simple",
+    ):
         """
         edge_pairs: torch.LongTensor, [2, num_edges]
         node_names: list[str], node names in order (index aligned with node index)
@@ -60,27 +80,39 @@ class OpenAIGPTLinkPredictor:
                 src, dst = edge_pairs[0, j].item(), edge_pairs[1, j].item()
                 model_name = node_names[dst]
                 dataset_name = node_names[src]
-                
+
                 # Get card information
                 model_card = model_cards.get(model_name, None) if model_cards else None
                 dataset_card = dataset_cards.get(dataset_name, None) if dataset_cards else None
-                
+
                 model_neighbors = None
                 dataset_neighbors = None
                 if mode == "neighborhood":
                     if G is None:
-                        raise ValueError("G (networkx graph) must be provided for neighborhood mode.")
+                        raise ValueError(
+                            "G (networkx graph) must be provided for neighborhood mode."
+                        )
                     # model_neighbors: this model's accuracy on other datasets
                     model_neighbors = []
                     for neighbor in G.neighbors(model_name):
-                        if neighbor != dataset_name and 'accuracy' in G[model_name][neighbor]:
-                            model_neighbors.append((neighbor, G[model_name][neighbor]['accuracy']))
+                        if neighbor != dataset_name and "accuracy" in G[model_name][neighbor]:
+                            model_neighbors.append((neighbor, G[model_name][neighbor]["accuracy"]))
                     # dataset_neighbors: other models' accuracy on this dataset
                     dataset_neighbors = []
                     for neighbor in G.neighbors(dataset_name):
-                        if neighbor != model_name and 'accuracy' in G[neighbor][dataset_name]:
-                            dataset_neighbors.append((neighbor, G[neighbor][dataset_name]['accuracy']))
-                prompt = self._build_prompt(model_name, dataset_name, model_card, dataset_card, model_neighbors, dataset_neighbors, mode=mode)
+                        if neighbor != model_name and "accuracy" in G[neighbor][dataset_name]:
+                            dataset_neighbors.append(
+                                (neighbor, G[neighbor][dataset_name]["accuracy"])
+                            )
+                prompt = self._build_prompt(
+                    model_name,
+                    dataset_name,
+                    model_card,
+                    dataset_card,
+                    model_neighbors,
+                    dataset_neighbors,
+                    mode=mode,
+                )
                 batch_prompts.append({"role": "user", "content": prompt})
 
             for prompt in batch_prompts:
@@ -98,6 +130,7 @@ class OpenAIGPTLinkPredictor:
                     prob = None
                 results.append(prob)
         return results
+
 
 if __name__ == "__main__":
     edge_pairs = torch.randint(0, 100, (2, 10))  # 10 edges

@@ -1,10 +1,11 @@
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch_geometric.nn import GeneralConv
-from .utils import build_bipartite_graph, nx_to_pyg_data
+
 from ..sampler import EdgeBatchSampler
+from .utils import build_bipartite_graph, nx_to_pyg_data
 
 
 class FeatAlign(nn.Module):
@@ -17,6 +18,7 @@ class FeatAlign(nn.Module):
         aligned_dataset_feats = self.dataset_transform(dataset_feats)
         aligned_model_feats = self.model_transform(model_feats)
         return torch.cat([aligned_dataset_feats, aligned_model_feats], 0)
+
 
 class GNNEdgePredictor(nn.Module):
     def __init__(self, model_feat_dim, hidden_feats, in_edges):
@@ -35,11 +37,14 @@ class GNNEdgePredictor(nn.Module):
         breakpoint()
         edge_weight_mask = F.relu(self.edge_mlp(edge_weight[edge_can_see]))
         x_ini = self.model_align(dataset_feats, model_feats)
-        x = F.relu(self.bn1(self.encoder_conv_1(x_ini, edge_index_mask, edge_attr=edge_weight_mask)))
+        x = F.relu(
+            self.bn1(self.encoder_conv_1(x_ini, edge_index_mask, edge_attr=edge_weight_mask))
+        )
         x = self.bn2(self.encoder_conv_2(x, edge_index_mask, edge_attr=edge_weight_mask))
         # Regression output: no sigmoid
         edge_predict = (x_ini[edge_index_predict[0]] * x[edge_index_predict[1]]).mean(dim=-1)
         return edge_predict
+
 
 class GNNTrainer:
     def __init__(self, model, optimizer, loss_fn, config, device):
@@ -59,7 +64,7 @@ class GNNTrainer:
                 data.edge_index.to(self.device),
                 edge_mask=batch_mask.to(self.device),
                 edge_can_see=edge_can_see.to(self.device),
-                edge_weight=data.edge_label.unsqueeze(-1).to(self.device)
+                edge_weight=data.edge_label.unsqueeze(-1).to(self.device),
             )
             labels = data.edge_label[batch_mask].to(self.device)
             loss = self.loss_fn(preds, labels)
@@ -79,11 +84,12 @@ class GNNTrainer:
                 data.edge_index.to(self.device),
                 edge_mask=mask.to(self.device),
                 edge_can_see=edge_can_see.to(self.device),
-                edge_weight=data.edge_label.unsqueeze(-1).to(self.device)
+                edge_weight=data.edge_label.unsqueeze(-1).to(self.device),
             )
             labels = data.edge_label[mask].to(self.device)
             mse = self.loss_fn(preds, labels).item()
         return mse
+
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,7 +98,7 @@ def main():
     G = build_bipartite_graph(
         data_dir="../data/eval_datasets_json_download_ranks",
         dataset_json="../data/dataset_info.json",
-        metadata_dir="../data/model_metadata_download_ranks"
+        metadata_dir="../data/model_metadata_download_ranks",
     )
     data = nx_to_pyg_data(G)
 
@@ -114,16 +120,21 @@ def main():
     model = GNNEdgePredictor(model_feat_dim=model_dim, hidden_feats=64, in_edges=1).to(device)
     optimizer = AdamW(model.parameters(), lr=1e-3)
     loss_fn = nn.MSELoss()
-    config = {'train_epoch': 50, 'batch_size': 4, 'train_mask_rate': 0.2}
+    config = {"train_epoch": 50, "batch_size": 4, "train_mask_rate": 0.2}
 
     trainer = GNNTrainer(model, optimizer, loss_fn, config, device)
-    sampler = EdgeBatchSampler(edge_mask=data.train_mask, batch_size=config['batch_size'], mask_rate=config['train_mask_rate'])
+    sampler = EdgeBatchSampler(
+        edge_mask=data.train_mask,
+        batch_size=config["batch_size"],
+        mask_rate=config["train_mask_rate"],
+    )
 
     # Training loop
-    for epoch in range(config['train_epoch']):
+    for epoch in range(config["train_epoch"]):
         train_loss = trainer.train(data, sampler)
         val_mse = trainer.evaluate(data, data.val_mask)
         print(f"[Epoch {epoch:03d}] Train MSE: {train_loss:.4f} | Val MSE: {val_mse:.4f}")
+
 
 if __name__ == "__main__":
     main()

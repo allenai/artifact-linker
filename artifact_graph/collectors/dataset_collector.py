@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,12 +14,11 @@ def ensure_directory(path: Path) -> None:
 
 
 class DatasetCollector:
-    def __init__(
-        self,
-        overview_json: str,
-        hf_token: Optional[str] = None,
-    ) -> None:
-        self.overview_path = Path(overview_json)
+    """
+    Collects metadata and README content for Hugging Face datasets.
+    """
+
+    def __init__(self, hf_token: Optional[str] = None) -> None:
         self.token = hf_token or os.getenv("HF_TOKEN")
         if not self.token:
             raise ValueError("HF_TOKEN must be set or provided.")
@@ -49,7 +48,7 @@ class DatasetCollector:
             "author": getattr(ds, "author", ""),
         }
 
-    def download_readme(self, dataset_id: str) -> Optional[bytes]:
+    def collect_readme(self, dataset_id: str) -> Optional[bytes]:
         """Download README.md for a dataset and return its bytes, without saving."""
         try:
             file_path = hf_hub_download(
@@ -96,7 +95,7 @@ class DatasetCollector:
     ) -> Dict[str, Union[Dict[str, Any], Optional[bytes]]]:
         """Collect metadata and readme content without saving files."""
         metadata = self.collect_metadata(dataset_id)
-        readme_bytes = self.download_readme(dataset_id)
+        readme_bytes = self.collect_readme(dataset_id)
         return {"metadata": metadata, "readme": readme_bytes}
 
     def collect_batch(
@@ -112,4 +111,44 @@ class DatasetCollector:
             except Exception as e:
                 results[did] = {"error": str(e)}
             time.sleep(pause)
+        return results
+
+    @staticmethod
+    def load_metadata(
+        dataset_id: str, metadata_dir: str = "dataset_metadata"
+    ) -> Optional[Dict[str, Any]]:
+        """Load saved metadata JSON for a given dataset ID."""
+        fname = dataset_id.replace("/", "__") + ".json"
+        path = Path(metadata_dir) / fname
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def load_readme(dataset_id: str, readme_dir: str = "dataset_readmes") -> Optional[bytes]:
+        """Load saved README file for a given dataset ID."""
+        fname = dataset_id.replace("/", "__") + "_README.md"
+        path = Path(readme_dir) / fname
+        if not path.exists():
+            return None
+        return path.read_bytes()
+
+    @staticmethod
+    def load_all_metadata(
+        metadata_dir: str = "dataset_metadata", min_downloads: int = 1000
+    ) -> Dict[str, Dict[str, Any]]:
+        """Load all metadata files from directory and filter by downloads."""
+        results = {}
+        metadata_path = Path(metadata_dir)
+        if not metadata_path.exists():
+            return results
+
+        for file in metadata_path.glob("*.json"):
+            try:
+                data = json.loads(file.read_text(encoding="utf-8"))
+                if data.get("downloads", 0) >= min_downloads:
+                    dataset_id = file.stem.replace("__", "/")
+                    results[dataset_id] = data
+            except Exception:
+                continue
         return results
