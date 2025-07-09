@@ -3,8 +3,8 @@ import torch
 import os
 import json
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
-from artifact_graph.data.collectors import ModelCollector, DatasetCollector, AccuracyCollector
-from artifact_graph.data.processors import GraphBuilder, CardProcessor
+from artifact_graph.collectors import ModelCollector, DatasetCollector, MetricCollector
+from artifact_graph.processors import GraphBuilder, CardProcessor
 from artifact_graph.models.llm_link_predictor import OpenAIGPTLinkPredictor
 
 
@@ -32,10 +32,10 @@ def main(args):
     print("Initializing data collectors...")
     model_collector = ModelCollector(args.metadata_dir)
     dataset_collector = DatasetCollector(args.dataset_json)
-    accuracy_collector = AccuracyCollector(args.data_dir)
+    metric_collector = MetricCollector(args.data_dir)
     
     print("Building graph...")
-    graph_builder = GraphBuilder(model_collector, dataset_collector, accuracy_collector)
+    graph_builder = GraphBuilder(model_collector, dataset_collector, metric_collector)
     G = graph_builder.build_bipartite_graph(args.min_downloads)
     
     print("Converting to PyG data...")
