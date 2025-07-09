@@ -20,9 +20,6 @@ def build_bipartite_graph(data_dir: str,
     }
 
     G = nx.Graph()
-    # add dataset nodes
-    for name, downloads in dataset_names.items():
-        G.add_node(name, type=DATASET, downloads=downloads)
 
     # add model–dataset edges
     for fname in os.listdir(data_dir):
@@ -45,17 +42,46 @@ def build_bipartite_graph(data_dir: str,
             ds_name = ds.split("/")[-1].lower()
             if ds_name not in dataset_names:
                 continue
-            # add nodes/edge
-            G.add_node(model_id, type=MODEL, downloads=md['downloads'])
-            G.add_edge(model_id, ds_name)
+            # check whether is dict and has accuracy
+            acc = None
+            if mapping is not None and ds_name in mapping and isinstance(mapping[ds_name], dict):
+                if 'accuracy' in mapping[ds_name]:
+                    acc = mapping[ds_name]['accuracy']
+                elif 'acc' in mapping[ds_name]:
+                    acc = mapping[ds_name]['acc']
+            if acc is not None:
+                try:
+                    acc = float(acc)
+                    if acc > 1:
+                        acc = acc / 100.0
+                    if 0 <= acc <= 1:
+                        # add nodes/edge with accuracy attribute
+                        G.add_node(model_id, type=MODEL)
+                        G.add_node(ds_name, type=DATASET)
+                        G.add_edge(model_id, ds_name, accuracy=acc)
+                except Exception:
+                    continue
+
     return G
 
 def nx_to_pyg_data(G: nx.Graph) -> Data:
-    # 2) Convert to PyG Data
     data = from_networkx(G)
-
+    # Build edge_attr manually, matching edge_index order
+    edge_attrs = []
+    nx_names = {i: n for i, n in enumerate(G.nodes())}
+    for u_idx, v_idx in zip(data.edge_index[0], data.edge_index[1]):
+        u = nx_names[u_idx.item()]
+        v = nx_names[v_idx.item()]
+        attr = G.get_edge_data(u, v)
+        acc = 0.0
+        if attr is not None and 'accuracy' in attr and attr['accuracy'] is not None:
+            acc = float(attr['accuracy'])
+        edge_attrs.append(acc)
+    import torch
+    data.edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
+    # Save node names in order
+    data.node_names = list(G.nodes())
     # 3) Build node‐feature matrix
-    # We'll encode: [is_model, is_dataset, log(downloads + 1)]
     feats = []
     for node, attrs in G.nodes(data=True):
         is_model = 1 if attrs['type'] == MODEL else 0
@@ -63,7 +89,6 @@ def nx_to_pyg_data(G: nx.Graph) -> Data:
         downloads = attrs.get('downloads', 0)
         feats.append([is_model, is_dataset, torch.log1p(torch.tensor(downloads, dtype=torch.float))])
     data.x = torch.stack([torch.tensor(f, dtype=torch.float) for f in feats], dim=0)
-
     return data
 
 def prepare_link_pred_splits(data: Data, val_ratio=0.1, test_ratio=0.1) -> Data:
@@ -87,17 +112,3 @@ if __name__ == "__main__":
 
     pyg_data = nx_to_pyg_data(G)
     pyg_data = prepare_link_pred_splits(pyg_data)
-
-    # Now pyg_data has:
-    #   .x                 node features
-    #   .train_pos_edge_index
-    #   .val_pos_edge_index / .val_neg_edge_index
-    #   .test_pos_edge_index / .test_neg_edge_index
-    #
-    # You can feed these into your LinkPredictionGNN:
-    #
-    #   pos_train, neg_train = pyg_data.train_pos_edge_index, negative_sampling(...)
-    #   out_pos, out_neg = model(pyg_data.x, pyg_data.train_pos_edge_index,
-    #                            pos_train, neg_train)
-    #
-    #   … compute loss, backprop, etc.

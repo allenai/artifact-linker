@@ -2,8 +2,8 @@ import argparse
 import torch
 from torch_geometric.utils import negative_sampling
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
-from research_scaffold.utils import build_bipartite_graph, prepare_link_pred_splits, nx_to_pyg_data
-from research_scaffold.gnn import LinkPredictionGNN
+from artifact_graph.utils import build_bipartite_graph, prepare_link_pred_splits, nx_to_pyg_data
+from artifact_graph.gnn import LinkPredictionGNN
 
 def bipartite_negative_sampling(edge_index, model_mask, num_neg_samples, over_sample=3):
     """
@@ -83,7 +83,7 @@ def get_topk_negative_edges(model, data, split, k=50):
             for (u, v), s in zip(topk_edges, topk_scores)]
 
 def main(args):
-    # 1) 数据准备
+    # 1) Data preparation
     G = build_bipartite_graph(
         args.data_dir, args.dataset_json, args.metadata_dir, args.min_downloads
     )
@@ -124,7 +124,7 @@ def main(args):
             e = e.t().contiguous()
         setattr(data, name, e.to(torch.long))
 
-    # 2) 设备 & 模型
+    # 2) Device & model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data = data.to(device)
 
@@ -138,7 +138,7 @@ def main(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     bce_loss  = torch.nn.BCELoss()
 
-    # 3) 训练循环 + checkpointing
+    # 3) Training loop + checkpointing
     best_val_auc = 0.0
     for epoch in range(1, args.epochs + 1):
         loss = train(model, data, optimizer, bce_loss)
@@ -150,13 +150,13 @@ def main(args):
                 f"Val AUC {val_auc:.4f} │ Val AP {val_ap:.4f} │ Val F1 {val_f1:.4f}"
             )
 
-            # 保存最佳模型
+            # Save best model
             if val_auc > best_val_auc:
                 best_val_auc = val_auc
                 torch.save(model.state_dict(), args.checkpoint_path)
                 print(f"→ New best val-F1 {best_val_auc:.4f}, checkpoint saved to {args.checkpoint_path}")
 
-    # 4) 加载最佳 checkpoint 并在测试集上评估
+    # 4) Load best checkpoint and evaluate on test set
     print(f"\nLoading best checkpoint (val-F1={best_val_auc:.4f}) from {args.checkpoint_path}")
     model.load_state_dict(torch.load(args.checkpoint_path, map_location=device))
 
