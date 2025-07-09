@@ -7,10 +7,7 @@ Path("output/models/metadata").mkdir(parents=True, exist_ok=True)
 Path("output/models/readmes").mkdir(parents=True, exist_ok=True)
 
 # Initialize collector
-mc = ModelCollector(
-    metadata_dir="output/models/metadata",
-    hf_token=os.getenv("HF_TOKEN"),
-)
+mc = ModelCollector(hf_token=os.getenv("HF_TOKEN"))
 
 # 1) Collect metadata & README in memory
 print("Collecting 'microsoft/DialoGPT-medium' model...")

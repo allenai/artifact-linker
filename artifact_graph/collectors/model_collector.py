@@ -14,12 +14,11 @@ def ensure_directory(path: Path) -> None:
 
 
 class ModelCollector:
-    def __init__(
-        self,
-        metadata_dir: str,
-        hf_token: Optional[str] = None,
-    ) -> None:
-        self.metadata_dir = Path(metadata_dir)
+    """
+    Collects metadata and README files for Hugging Face models.
+    """
+
+    def __init__(self, hf_token: Optional[str] = None) -> None:
         self.token = hf_token or os.getenv("HF_TOKEN")
         if not self.token:
             raise ValueError("HF_TOKEN must be provided or set as env var.")
@@ -64,7 +63,7 @@ class ModelCollector:
         meta["baseModel"] = base
         return meta
 
-    def download_readme(self, model_id: str) -> Optional[bytes]:
+    def collect_readme(self, model_id: str) -> Optional[bytes]:
         """Download README.md for a model and return its bytes, without saving."""
         try:
             src = hf_hub_download(
@@ -111,7 +110,7 @@ class ModelCollector:
     ) -> Dict[str, Union[Dict[str, Any], Optional[bytes]]]:
         """Collect metadata and readme content without saving files."""
         metadata = self.collect_metadata(model_id)
-        readme_bytes = self.download_readme(model_id)
+        readme_bytes = self.collect_readme(model_id)
         return {"metadata": metadata, "readme": readme_bytes}
 
     def collect_batch(
@@ -129,24 +128,38 @@ class ModelCollector:
             time.sleep(pause)
         return results
 
-    def load_metadata(self, model_id: str) -> Optional[Dict[str, Any]]:
-        """Loads saved metadata JSON for a given model ID."""
+    @staticmethod
+    def load_metadata(model_id: str, metadata_dir: str = "model_metadata") -> Optional[Dict[str, Any]]:
+        """Load saved metadata JSON for a given model ID."""
         fname = model_id.replace("/", "__") + ".json"
-        path = self.metadata_dir / fname
+        path = Path(metadata_dir) / fname
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def filter_loaded(
-        self,
-        min_downloads: int = 1000,
-    ) -> Dict[str, Dict[str, Any]]:
-        """Returns loaded metadata for models meeting a download threshold."""
+    @staticmethod
+    def load_readme(model_id: str, readme_dir: str = "model_readmes") -> Optional[bytes]:
+        """Load saved README file for a given model ID."""
+        fname = model_id.replace("/", "__") + "_README.md"
+        path = Path(readme_dir) / fname
+        if not path.exists():
+            return None
+        return path.read_bytes()
+
+    @staticmethod
+    def load_all_metadata(metadata_dir: str = "model_metadata", min_downloads: int = 1000) -> Dict[str, Dict[str, Any]]:
+        """Load all metadata files from directory and filter by downloads."""
         results = {}
-        ensure_directory(self.metadata_dir)
-        for file in self.metadata_dir.glob("*.json"):
-            data = json.loads(file.read_text(encoding="utf-8"))
-            if data.get("downloads", 0) >= min_downloads:
-                model_id = file.stem.replace("__", "/")
-                results[model_id] = data
+        metadata_path = Path(metadata_dir)
+        if not metadata_path.exists():
+            return results
+        
+        for file in metadata_path.glob("*.json"):
+            try:
+                data = json.loads(file.read_text(encoding="utf-8"))
+                if data.get("downloads", 0) >= min_downloads:
+                    model_id = file.stem.replace("__", "/")
+                    results[model_id] = data
+            except Exception:
+                continue
         return results

@@ -8,11 +8,8 @@ from artifact_graph.collectors.dataset_collector import DatasetCollector
 Path("output/datasets/metadata").mkdir(parents=True, exist_ok=True)
 Path("output/datasets/readmes").mkdir(parents=True, exist_ok=True)
 
-# Initialize collector (overview.json can be empty or existing)
-dc = DatasetCollector(
-    overview_json="output/datasets/overview.json",
-    hf_token=os.getenv("HF_TOKEN"),
-)
+# Initialize collector
+dc = DatasetCollector(hf_token=os.getenv("HF_TOKEN"))
 
 # 1) Collect metadata & README in memory
 print("Collecting 'squad' dataset...")

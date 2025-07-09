@@ -1,90 +1,128 @@
-import os
-import json
-import random
 import networkx as nx
-from .graph_visualizer import visualize_graph_interactive
+from pathlib import Path
+from typing import Optional, Dict
 
-MODEL, DATASET = "model", "dataset"
+from ..collectors import ModelCollector, DatasetCollector, MetricCollector
 
-def load_model_dataset_graph(data_dir: str) -> nx.Graph:
-    """Load model-dataset JSON files and construct bipartite graph."""
-    with open('dataset_info.json', 'r', encoding='utf-8') as f:
-        dataset_info = json.load(f)
-    
-    dataset_names = [dataset['id'].split('/')[-1].lower() for dataset in dataset_info if dataset['downloads'] > 1000]
+MODEL_NODE = "model"
+DATASET_NODE = "dataset"
 
+
+def load_artifact_graph(
+    models_dir: str = "output/models/metadata",
+    datasets_dir: str = "output/datasets/metadata",
+    metrics_dir: str = "output/metrics",
+    hf_token: Optional[str] = None,
+    min_downloads: int = 1000,
+) -> nx.Graph:
+    """
+    Construct a bipartite graph of models and datasets.
+
+    Nodes:
+      - model nodes (type='model', downloads)
+      - dataset nodes (type='dataset', downloads)
+
+    Edges:
+      - Connect a model to a dataset if evaluation metrics exist
+      - Edge attribute: 'metrics' dict
+
+    Args:
+      models_dir: directory of model metadata
+      datasets_dir: directory of dataset metadata
+      metrics_dir: directory of per-model metrics
+      hf_token: unused Hugging Face token
+      min_downloads: download cutoff for filtering
+
+    Returns:
+      An undirected NetworkX graph
+    """
     G = nx.Graph()
-    for fname in os.listdir(data_dir):
-        if not fname.endswith(".json"):
-            continue
-        model_id = fname[:-5]  # remove ".json"
-        path = os.path.join(data_dir, fname)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            with open('model_metadata_download_ranks/{}.json'.format(model_id), 'r', encoding='utf-8') as f:
-                model_metadata = json.load(f)
 
-            has_paper_or_not = False
-            tags = model_metadata.get('tags', [])
-            for tag in tags:
-                if tag.startswith('arxiv:'):
-                    has_paper_or_not = True
-                    break
-            if not has_paper_or_not:
-                print(f"✗ {model_id} does not have a paper.")
-                continue
+    # Load metadata and metrics
+    models = ModelCollector.load_all_metadata(models_dir, min_downloads)
+    datasets = DatasetCollector.load_all_metadata(datasets_dir, min_downloads)
+    metrics = MetricCollector.load_all_metrics(metrics_dir)
 
-            if model_metadata['downloads'] < 1000:
-                continue
-            if not isinstance(data, dict):
-                continue
-        except Exception as e:
-            print(f"✗ Failed to load {model_id}: {e}")
+    # Map normalized dataset names -> full IDs
+    name_map: Dict[str, str] = {
+        ds_id.split('/')[-1].lower(): ds_id for ds_id in datasets
+    }
+
+    for model_id, meta in models.items():
+        # Only include models with a linked paper
+        if not any(tag.startswith("arxiv:") for tag in meta.get("tags", [])):
             continue
 
-        for dataset in data.keys():
-            dataset_name = dataset.split("/")[-1].lower() if "/" in dataset else dataset.lower()
-            if dataset_name not in dataset_names:
-                continue
-            else:
-                index = dataset_names.index(dataset_name)
+        model_metrics = metrics.get(model_id)
+        if not model_metrics:
+            continue
 
-            G.add_node(model_id, type=MODEL)
-            G.add_node(dataset_names[index], type=DATASET)
-            G.add_edge(model_id, dataset_names[index])
+        # Add model node
+        G.add_node(model_id, type=MODEL_NODE, downloads=meta.get("downloads", 0))
+
+        for ds_key, ds_metrics in model_metrics.items():
+            if not isinstance(ds_metrics, dict):
+                continue
+
+            norm = ds_key.split('/')[-1].lower()
+            ds_id = name_map.get(norm)
+            if not ds_id:
+                continue
+
+            # Add dataset node if missing
+            if not G.has_node(ds_id):
+                G.add_node(
+                    ds_id,
+                    type=DATASET_NODE,
+                    downloads=datasets[ds_id].get("downloads", 0),
+                )
+
+            # Add edge with metrics
+            G.add_edge(model_id, ds_id, metrics=ds_metrics)
+
     return G
 
-def get_subgraph(G: nx.Graph, models_per_dataset=3) -> nx.Graph:
+
+def load_pyg_graph_from_networkx(G: nx.Graph) -> 'Data':
     """
-    Keep all dataset nodes, and for each dataset node, sample a few connected model nodes.
-    This ensures all data nodes are included and visualization is meaningful.
+    Convert a NetworkX bipartite graph to a PyTorch Geometric Data object.
+
+    Node features: one-hot for model/dataset types.
+    Edge attrs: first metric value as float.
+
+    Returns:
+      Data(x, edge_index, edge_attr, model_names, dataset_names)
     """
-    dataset_nodes = [n for n, attr in G.nodes(data=True) if attr.get("type") == DATASET]
-    selected_nodes = set(dataset_nodes)
+    from torch_geometric.data import Data
+    import torch
 
-    for dataset in dataset_nodes:
-        neighbors = list(G.neighbors(dataset))
-        sampled_models = random.sample(neighbors, min(models_per_dataset, len(neighbors)))
-        selected_nodes.update(sampled_models)
+    nodes = list(G.nodes)
+    idx_map = {n: i for i, n in enumerate(nodes)}
+    types = [G.nodes[n]['type'] for n in nodes]
 
-    return G.subgraph(selected_nodes).copy()
+    model_idxs = [i for i, t in enumerate(types) if t == MODEL_NODE]
+    dataset_idxs = [i for i, t in enumerate(types) if t == DATASET_NODE]
 
+    # Build feature matrix
+    x = torch.zeros((len(nodes), 2))
+    x[model_idxs, 0] = 1
+    x[dataset_idxs, 1] = 1
 
-def main():
-    data_dir = "eval_datasets_json_download_ranks"
-    G = load_model_dataset_graph(data_dir)
-    print(f"Graph loaded with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
+    # Build edges and attributes
+    edge_list, attr_list = [], []
+    for u, v, data in G.edges(data=True):
+        u_i, v_i = idx_map[u], idx_map[v]
+        edge_list.append([u_i, v_i])
+        first_val = next(iter(data.get('metrics', {}).values()), 0.0)
+        attr_list.append(float(first_val))
 
-    # Count model and dataset nodes
-    types = nx.get_node_attributes(G, "type")
-    model_nodes = [n for n, t in types.items() if t == MODEL]
-    dataset_nodes = [n for n, t in types.items() if t == DATASET]
-    print(f"✓ Model nodes: {len(model_nodes)}")
-    print(f"✓ Dataset nodes: {len(dataset_nodes)}")
-    visualize_graph_interactive(G)
+    edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(attr_list, dtype=torch.float)
 
-
-if __name__ == "__main__":
-    main()
+    return Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        model_names=[nodes[i] for i in model_idxs],
+        dataset_names=[nodes[i] for i in dataset_idxs],
+    )
