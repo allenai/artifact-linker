@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from huggingface_hub import HfApi, hf_hub_download
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 
 def ensure_directory(path: Path) -> None:
@@ -48,19 +51,28 @@ class ModelCollector:
         """
         Fetches and returns metadata for a single model.
         """
-        matching = list(self.api.list_models(filter=model_id))
-        if not matching:
-            raise ValueError(f"Model '{model_id}' not found.")
-        model_summary = matching[0]
-        detailed = self.api.model_info(model_id)
-        meta = self._extract_model_info(model_summary)
-        trained_ds = self._safe_card_field(detailed, "datasets")
-        base = self._safe_card_field(detailed, "base_model")
-        meta["trainedDataset"] = (
-            trained_ds if isinstance(trained_ds, list) else ([trained_ds] if trained_ds else [])
-        )
-        meta["baseModel"] = base
-        return meta
+        try:
+            detailed = self.api.model_info(model_id)
+            meta = {
+                "modelId": detailed.id,
+                "sha": getattr(detailed, "sha", None),
+                "lastModified": getattr(detailed, "lastModified", ""),
+                "pipeline_tag": getattr(detailed, "pipeline_tag", None),
+                "tags": getattr(detailed, "tags", []),
+                "likes": getattr(detailed, "likes", None),
+                "downloads": getattr(detailed, "downloads", None),
+                "private": getattr(detailed, "private", False),
+                "author": getattr(detailed, "author", None),
+            }
+            trained_ds = self._safe_card_field(detailed, "datasets")
+            base = self._safe_card_field(detailed, "base_model")
+            meta["trainedDataset"] = (
+                trained_ds if isinstance(trained_ds, list) else ([trained_ds] if trained_ds else [])
+            )
+            meta["baseModel"] = base
+            return meta
+        except Exception as e:
+            raise ValueError(f"Failed to fetch model '{model_id}': {str(e)}")
 
     def collect_readme(self, model_id: str) -> Optional[bytes]:
         """Download README.md for a model and return its bytes, without saving."""
@@ -98,7 +110,7 @@ class ModelCollector:
         """Save README bytes to a markdown file."""
         out_dir = Path(readme_dir)
         ensure_directory(out_dir)
-        fname = model_id.replace("/", "__") + "_README.md"
+        fname = model_id.replace("/", "__") + ".md"
         path = out_dir / fname
         path.write_bytes(readme_bytes)
         return path
@@ -127,6 +139,40 @@ class ModelCollector:
             time.sleep(pause)
         return results
 
+    def collect_all(self, sort: str = "downloads", limit: Optional[int] = None, metadata_dir: str = "output/models/metadata", readme_dir: str = "output/models/readmes", max_workers: int = 5) -> None:
+        """Collects all models, sorted and optionally limited, and saves them progressively in parallel."""
+        print("Fetching model list...")
+        start_time = time.time()
+        models = list(self.api.list_models(sort=sort, full=True))
+        if limit:
+            models = models[:limit]
+        print(f"Finished fetching model list in {time.time() - start_time:.2f} seconds.")
+
+        Path(metadata_dir).mkdir(parents=True, exist_ok=True)
+        Path(readme_dir).mkdir(parents=True, exist_ok=True)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            process_func = partial(self._process_and_save_item, item_type='model', metadata_dir=metadata_dir, readme_dir=readme_dir)
+            list(tqdm(executor.map(process_func, models), total=len(models), desc="Collecting and saving models"))
+
+    def _process_and_save_item(self, item: Any, item_type: str, metadata_dir: str, readme_dir: str) -> None:
+        """Helper function to process and save a single item (model or dataset)."""
+        item_id = item.id
+        
+        # Skip if metadata file already exists
+        metadata_path = Path(metadata_dir) / f"{item_id.replace('/', '__')}.json"
+        if metadata_path.exists():
+            return
+
+        try:
+            data = self.collect_one(item_id)
+            if "error" not in data:
+                self.save_metadata(item_id, data["metadata"], metadata_dir=metadata_dir)
+                if data["readme"]:
+                    self.save_readme(item_id, data["readme"], readme_dir=readme_dir)
+        except Exception as e:
+            print(f"Error processing {item_id}: {e}")
+
     @staticmethod
     def load_metadata(
         model_id: str, metadata_dir: str = "model_metadata"
@@ -141,7 +187,7 @@ class ModelCollector:
     @staticmethod
     def load_readme(model_id: str, readme_dir: str = "model_readmes") -> Optional[bytes]:
         """Load saved README file for a given model ID."""
-        fname = model_id.replace("/", "__") + "_README.md"
+        fname = model_id.replace("/", "__") + ".md"
         path = Path(readme_dir) / fname
         if not path.exists():
             return None
