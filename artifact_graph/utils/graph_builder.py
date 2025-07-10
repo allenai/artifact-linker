@@ -1,6 +1,8 @@
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import networkx as nx
+import torch
+from torch_geometric.data import Data
 
 from ..collectors import DatasetCollector, MetricCollector, ModelCollector
 
@@ -13,28 +15,30 @@ def load_artifact_graph(
     datasets_dir: str = "output/datasets/metadata",
     metrics_dir: str = "output/metrics",
     hf_token: Optional[str] = None,
-    min_downloads: int = 1000,
+    min_downloads: int = 1,
+    metric_key_substring: str = "acc",
 ) -> nx.Graph:
     """
-    Construct a bipartite graph of models and datasets.
+    Construct a bipartite graph of models and datasets based on evaluation metrics.
 
     Nodes:
-      - model nodes (type='model', downloads)
-      - dataset nodes (type='dataset', downloads)
+      - model nodes with attributes {type: 'model', downloads}
+      - dataset nodes with attributes {type: 'dataset', downloads}
 
     Edges:
-      - Connect a model to a dataset if evaluation metrics exist
-      - Edge attribute: 'metrics' dict
+      - Connect model to dataset if a metric name contains `metric_key_substring`.
+      - Edge attribute: {metric_key_substring: metric_value}
 
     Args:
-      models_dir: directory of model metadata
-      datasets_dir: directory of dataset metadata
-      metrics_dir: directory of per-model metrics
-      hf_token: unused Hugging Face token
-      min_downloads: download cutoff for filtering
+      models_dir: Directory of model metadata files.
+      datasets_dir: Directory of dataset metadata files.
+      metrics_dir: Directory of per-model metrics files.
+      hf_token: Hugging Face token (currently unused).
+      min_downloads: Minimum downloads threshold for filtering.
+      metric_key_substring: Substring to match metric names (case-insensitive).
 
     Returns:
-      An undirected NetworkX graph
+      An undirected NetworkX graph.
     """
     G = nx.Graph()
 
@@ -43,84 +47,119 @@ def load_artifact_graph(
     datasets = DatasetCollector.load_all_metadata(datasets_dir, min_downloads)
     metrics = MetricCollector.load_all_metrics(metrics_dir)
 
-    # Map normalized dataset names -> full IDs
-    name_map: Dict[str, str] = {ds_id.split("/")[-1].lower(): ds_id for ds_id in datasets}
+    # Map normalized dataset name -> dataset ID
+    name_map: Dict[str, str] = {
+        ds_id.split("/")[-1].lower(): ds_id
+        for ds_id in datasets
+    }
 
     for model_id, meta in models.items():
-        # Only include models with a linked paper
-        if not any(tag.startswith("arxiv:") for tag in meta.get("tags", [])):
+        # Skip models without a linked paper
+        tags = meta.get("tags", [])
+        if not any(tag.startswith("arxiv:") for tag in tags):
             continue
 
-        model_metrics = metrics.get(model_id)
+        model_metrics = metrics.get(model_id, {})
         if not model_metrics:
             continue
 
-        # Add model node
-        G.add_node(model_id, type=MODEL_NODE, downloads=meta.get("downloads", 0))
 
+        # Inspect dataset metrics for this model
         for ds_key, ds_metrics in model_metrics.items():
             if not isinstance(ds_metrics, dict):
                 continue
 
-            norm = ds_key.split("/")[-1].lower()
-            ds_id = name_map.get(norm)
+            ds_norm = ds_key.split("/")[-1].lower()
+            ds_id = name_map.get(ds_norm)
             if not ds_id:
                 continue
+
+            # Find the first matching metric
+            metric_value: Optional[float] = None
+            for m_name, m_val in ds_metrics.items():
+                if metric_key_substring.lower() in m_name.lower() and isinstance(m_val, (int, float)):
+                    metric_value = float(m_val)
+                    break
+
+            if metric_value is None:
+                continue
+
+            # Normalize percentage values
+            if metric_value > 1:
+                metric_value /= 100
 
             # Add dataset node if missing
             if not G.has_node(ds_id):
                 G.add_node(
+                    model_id,
+                    type=MODEL_NODE,
+                    downloads=meta.get("downloads", 0)
+                )
+                G.add_node(
                     ds_id,
                     type=DATASET_NODE,
-                    downloads=datasets[ds_id].get("downloads", 0),
+                    downloads=datasets[ds_id].get("downloads", 0)
                 )
 
-            # Add edge with metrics
-            G.add_edge(model_id, ds_id, metrics=ds_metrics)
+                G.add_edge(
+                    model_id,
+                    ds_id,
+                    **{metric_key_substring: metric_value}
+                )
 
     return G
 
 
-def load_pyg_graph_from_networkx(G: nx.Graph) -> Any:
+def load_pyg_graph_from_networkx(G: nx.Graph) -> Data:
     """
     Convert a NetworkX bipartite graph to a PyTorch Geometric Data object.
 
-    Node features: one-hot for model/dataset types.
-    Edge attrs: first metric value as float.
+    Node features:
+      - One-hot encoding: [1,0] for model, [0,1] for dataset
+    Edge attributes:
+      - Uses the first available metric value on each edge
 
     Returns:
-      Data(x, edge_index, edge_attr, model_names, dataset_names)
+      A torch_geometric.data.Data object with:
+        - x: node feature tensor
+        - edge_index: edge index tensor
+        - edge_attr: edge attribute tensor
+        - model_names: list of model node IDs
+        - dataset_names: list of dataset node IDs
     """
-    import torch
-    from torch_geometric.data import Data
-
     nodes = list(G.nodes)
-    idx_map = {n: i for i, n in enumerate(nodes)}
-    types = [G.nodes[n]["type"] for n in nodes]
-
-    model_idxs = [i for i, t in enumerate(types) if t == MODEL_NODE]
-    dataset_idxs = [i for i, t in enumerate(types) if t == DATASET_NODE]
+    idx_map = {node: idx for idx, node in enumerate(nodes)}
+    types = [G.nodes[node]["type"] for node in nodes]
 
     # Build feature matrix
-    x = torch.zeros((len(nodes), 2))
-    x[model_idxs, 0] = 1
-    x[dataset_idxs, 1] = 1
+    x = torch.zeros((len(nodes), 2), dtype=torch.float)
+    for idx, t in enumerate(types):
+        if t == MODEL_NODE:
+            x[idx, 0] = 1.0
+        elif t == DATASET_NODE:
+            x[idx, 1] = 1.0
 
     # Build edges and attributes
-    edge_list, attr_list = [], []
+    edge_index = []
+    edge_attr = []
     for u, v, data in G.edges(data=True):
-        u_i, v_i = idx_map[u], idx_map[v]
-        edge_list.append([u_i, v_i])
-        first_val = next(iter(data.get("metrics", {}).values()), 0.0)
-        attr_list.append(float(first_val))
+        u_idx, v_idx = idx_map[u], idx_map[v]
+        edge_index.append([u_idx, v_idx])
+        # Take the first metric value available
+        metric_val = next(iter(data.values()), 0.0)
+        edge_attr.append(float(metric_val))
 
-    edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
-    edge_attr = torch.tensor(attr_list, dtype=torch.float)
+    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+
+    # Separate node lists by type
+    model_names = [node for node in nodes if G.nodes[node]["type"] == MODEL_NODE]
+    dataset_names = [node for node in nodes if G.nodes[node]["type"] == DATASET_NODE]
 
     return Data(
         x=x,
         edge_index=edge_index,
         edge_attr=edge_attr,
-        model_names=[nodes[i] for i in model_idxs],
-        dataset_names=[nodes[i] for i in dataset_idxs],
+        model_names=model_names,
+        dataset_names=dataset_names,
     )

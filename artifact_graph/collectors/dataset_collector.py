@@ -171,7 +171,7 @@ class DatasetCollector:
 
     @staticmethod
     def load_all_metadata(
-        metadata_dir: str = "dataset_metadata", min_downloads: int = 1000
+        metadata_dir: str = "dataset_metadata", min_downloads: int = 1
     ) -> Dict[str, Dict[str, Any]]:
         """Load all metadata files from directory and filter by downloads."""
         results = {}
