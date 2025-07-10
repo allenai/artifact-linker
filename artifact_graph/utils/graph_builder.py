@@ -139,6 +139,8 @@ def load_pyg_graph_from_networkx(G: nx.Graph) -> Data:
         elif t == DATASET_NODE:
             x[idx, 1] = 1.0
 
+    node_type = torch.tensor([0 if t == MODEL_NODE else 1 for t in types], dtype=torch.long)
+
     # Build edges and attributes
     edge_index = []
     edge_attr = []
@@ -160,6 +162,8 @@ def load_pyg_graph_from_networkx(G: nx.Graph) -> Data:
         x=x,
         edge_index=edge_index,
         edge_attr=edge_attr,
+        node_type=node_type,
         model_names=model_names,
         dataset_names=dataset_names,
+        node_names_ordered=nodes,
     )

@@ -187,7 +187,7 @@ class ModelCollector:
     @staticmethod
     def load_readme(model_id: str, readme_dir: str = "model_readmes") -> Optional[bytes]:
         """Load saved README file for a given model ID."""
-        fname = model_id.replace("/", "__") + ".md"
+        fname = model_id.replace("/", "__") + "_README.md"
         path = Path(readme_dir) / fname
         if not path.exists():
             return None

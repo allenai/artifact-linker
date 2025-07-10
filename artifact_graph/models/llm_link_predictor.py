@@ -1,14 +1,19 @@
 import os
-
+import networkx as nx
 import openai
-import torch
+from tqdm import tqdm
+
+from artifact_graph.collectors.dataset_collector import DatasetCollector
+from artifact_graph.collectors.model_collector import ModelCollector
 
 
-class OpenAIGPTLinkPredictor:
+class LLMLinkPredictor:
     def __init__(self, model_name="gpt-3.5-turbo", api_key=None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = openai.OpenAI(api_key=self.api_key)
+        self.model_collector = ModelCollector(hf_token=os.getenv("HF_TOKEN"))
+        self.dataset_collector = DatasetCollector(hf_token=os.getenv("HF_TOKEN"))
 
     def _build_prompt(
         self,
@@ -57,53 +62,58 @@ class OpenAIGPTLinkPredictor:
     def predict(
         self,
         edge_pairs,
-        node_names,
-        G=None,
-        model_cards=None,
-        dataset_cards=None,
-        batch_size=5,
+        G,
+        model_dir="output/models",
+        dataset_dir="output/datasets",
         mode="simple",
     ):
         """
-        edge_pairs: torch.LongTensor, [2, num_edges]
-        node_names: list[str], node names in order (index aligned with node index)
-        G: networkx.Graph, optional, required for neighborhood mode
-        model_cards: dict, {model_name: card_info}
-        dataset_cards: dict, {dataset_name: card_info}
-        mode: "simple" or "neighborhood"
+        Predicts accuracy for given model-dataset pairs.
+
+        Args:
+            edge_pairs (list of tuples): List of (model_name, dataset_name) pairs.
+            G (nx.Graph): The artifact graph.
+            model_dir (str): Directory for model artifacts.
+            dataset_dir (str): Directory for dataset artifacts.
+            mode (str): "simple" or "neighborhood".
         """
         results = []
-        num_edges = edge_pairs.size(1)
-        for i in range(0, num_edges, batch_size):
-            batch_prompts = []
-            for j in range(i, min(i + batch_size, num_edges)):
-                src, dst = edge_pairs[0, j].item(), edge_pairs[1, j].item()
-                model_name = node_names[dst]
-                dataset_name = node_names[src]
+        for model_name, dataset_name in tqdm(edge_pairs, desc="Predicting Links"):
+            try:
+                # Load metadata and readme using collectors
+                model_card_bytes = ModelCollector.load_readme(
+                    model_name, readme_dir=os.path.join(model_dir, "readmes")
+                )
+                if model_card_bytes:
+                    model_card = model_card_bytes.decode("utf-8", errors="ignore")
+                else:
+                    model_card = "Model card not available."
+                    print(f"Warning: Could not find README for model {model_name}")
 
-                # Get card information
-                model_card = model_cards.get(model_name, None) if model_cards else None
-                dataset_card = dataset_cards.get(dataset_name, None) if dataset_cards else None
+                dataset_card_bytes = DatasetCollector.load_readme(
+                    dataset_name, readme_dir=os.path.join(dataset_dir, "readmes")
+                )
+                if dataset_card_bytes:
+                    dataset_card = dataset_card_bytes.decode("utf-8", errors="ignore")
+                else:
+                    dataset_card = "Dataset card not available."
+                    print(f"Warning: Could not find README for dataset {dataset_name}")
 
+                # Get neighborhood information
                 model_neighbors = None
                 dataset_neighbors = None
                 if mode == "neighborhood":
-                    if G is None:
-                        raise ValueError(
-                            "G (networkx graph) must be provided for neighborhood mode."
-                        )
-                    # model_neighbors: this model's accuracy on other datasets
                     model_neighbors = []
                     for neighbor in G.neighbors(model_name):
-                        if neighbor != dataset_name and "accuracy" in G[model_name][neighbor]:
+                        if neighbor != dataset_name and G.nodes[neighbor].get("type") == "dataset" and "accuracy" in G[model_name][neighbor]:
                             model_neighbors.append((neighbor, G[model_name][neighbor]["accuracy"]))
-                    # dataset_neighbors: other models' accuracy on this dataset
+                    
                     dataset_neighbors = []
                     for neighbor in G.neighbors(dataset_name):
-                        if neighbor != model_name and "accuracy" in G[neighbor][dataset_name]:
-                            dataset_neighbors.append(
-                                (neighbor, G[neighbor][dataset_name]["accuracy"])
-                            )
+                        if neighbor != model_name and G.nodes[neighbor].get("type") == "model" and "accuracy" in G[neighbor][dataset_name]:
+                            dataset_neighbors.append((neighbor, G[neighbor][dataset_name]["accuracy"]))
+
+                # Build prompt
                 prompt = self._build_prompt(
                     model_name,
                     dataset_name,
@@ -113,28 +123,27 @@ class OpenAIGPTLinkPredictor:
                     dataset_neighbors,
                     mode=mode,
                 )
-                batch_prompts.append({"role": "user", "content": prompt})
 
-            for prompt in batch_prompts:
+                # Get prediction from OpenAI
                 response = self.client.chat.completions.create(
                     model=self.model_name,
-                    messages=[prompt],
+                    messages=[{"role": "user", "content": prompt}],
                     max_tokens=8,
                     temperature=0.0,
                 )
                 answer = response.choices[0].message.content.strip()
+                
+                # Parse result
                 try:
                     prob = float(answer.split()[0])
                     prob = max(0.0, min(1.0, prob))
                 except Exception:
                     prob = None
+                
                 results.append(prob)
+
+            except Exception as e:
+                print(f"Error predicting for ({model_name}, {dataset_name}): {e}")
+                results.append(None)
+        
         return results
-
-
-if __name__ == "__main__":
-    edge_pairs = torch.randint(0, 100, (2, 10))  # 10 edges
-    node_names = [f"node_{i}" for i in range(100)]
-    predictor = OpenAIGPTLinkPredictor(model_name="gpt-4o")
-    results = predictor.predict(edge_pairs, node_names)
-    print(results)
