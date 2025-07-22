@@ -163,7 +163,7 @@ class DatasetCollector:
     @staticmethod
     def load_readme(dataset_id: str, readme_dir: str = "dataset_readmes") -> Optional[bytes]:
         """Load saved README file for a given dataset ID."""
-        fname = dataset_id.replace("/", "__") + ".md"
+        fname = dataset_id.replace("/", "__") + "_README.md"
         path = Path(readme_dir) / fname
         if not path.exists():
             return None
