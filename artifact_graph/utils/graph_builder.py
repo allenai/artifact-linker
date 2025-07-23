@@ -48,10 +48,7 @@ def load_artifact_graph(
     metrics = MetricCollector.load_all_metrics(metrics_dir)
 
     # Map normalized dataset name -> dataset ID
-    name_map: Dict[str, str] = {
-        ds_id.split("/")[-1].lower(): ds_id
-        for ds_id in datasets
-    }
+    name_map: Dict[str, str] = {ds_id.split("/")[-1].lower(): ds_id for ds_id in datasets}
 
     for model_id, meta in models.items():
         # Skip models without a linked paper
@@ -62,7 +59,6 @@ def load_artifact_graph(
         model_metrics = metrics.get(model_id, {})
         if not model_metrics:
             continue
-
 
         # Inspect dataset metrics for this model
         for ds_key, ds_metrics in model_metrics.items():
@@ -77,7 +73,9 @@ def load_artifact_graph(
             # Find the first matching metric
             metric_value: Optional[float] = None
             for m_name, m_val in ds_metrics.items():
-                if metric_key_substring.lower() in m_name.lower() and isinstance(m_val, (int, float)):
+                if metric_key_substring.lower() in m_name.lower() and isinstance(
+                    m_val, (int, float)
+                ):
                     metric_value = float(m_val)
                     break
 
@@ -90,22 +88,10 @@ def load_artifact_graph(
 
             # Add dataset node if missing
             if not G.has_node(ds_id):
-                G.add_node(
-                    model_id,
-                    type=MODEL_NODE,
-                    downloads=meta.get("downloads", 0)
-                )
-                G.add_node(
-                    ds_id,
-                    type=DATASET_NODE,
-                    downloads=datasets[ds_id].get("downloads", 0)
-                )
+                G.add_node(model_id, type=MODEL_NODE, downloads=meta.get("downloads", 0))
+                G.add_node(ds_id, type=DATASET_NODE, downloads=datasets[ds_id].get("downloads", 0))
 
-                G.add_edge(
-                    model_id,
-                    ds_id,
-                    **{metric_key_substring: metric_value}
-                )
+                G.add_edge(model_id, ds_id, **{metric_key_substring: metric_value})
 
     return G
 

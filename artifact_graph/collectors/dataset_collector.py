@@ -1,14 +1,16 @@
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from huggingface_hub import HfApi, hf_hub_download
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+import asyncio
+import aiohttp
 
 
 def ensure_directory(path: Path) -> None:
@@ -115,7 +117,14 @@ class DatasetCollector:
             time.sleep(pause)
         return results
 
-    def collect_all(self, sort: str = "downloads", limit: Optional[int] = None, metadata_dir: str = "output/datasets/metadata", readme_dir: str = "output/datasets/readmes", max_workers: int = 5) -> None:
+    def collect_all(
+        self,
+        sort: str = "downloads",
+        limit: Optional[int] = None,
+        metadata_dir: str = "output/datasets/metadata",
+        readme_dir: str = "output/datasets/readmes",
+        max_workers: int = 5,
+    ) -> None:
         """Collects all datasets, sorted and optionally limited, and saves them progressively in parallel."""
         print("Fetching dataset list...")
         start_time = time.time()
@@ -128,10 +137,23 @@ class DatasetCollector:
         Path(readme_dir).mkdir(parents=True, exist_ok=True)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            process_func = partial(self._process_and_save_item, item_type='dataset', metadata_dir=metadata_dir, readme_dir=readme_dir)
-            list(tqdm(executor.map(process_func, datasets), total=len(datasets), desc="Collecting and saving datasets"))
+            process_func = partial(
+                self._process_and_save_item,
+                item_type="dataset",
+                metadata_dir=metadata_dir,
+                readme_dir=readme_dir,
+            )
+            list(
+                tqdm(
+                    executor.map(process_func, datasets),
+                    total=len(datasets),
+                    desc="Collecting and saving datasets",
+                )
+            )
 
-    def _process_and_save_item(self, item: Any, item_type: str, metadata_dir: str, readme_dir: str) -> None:
+    def _process_and_save_item(
+        self, item: Any, item_type: str, metadata_dir: str, readme_dir: str
+    ) -> None:
         """Helper function to process and save a single item (model or dataset)."""
         item_id = item.id
 
@@ -148,6 +170,179 @@ class DatasetCollector:
                     self.save_readme(item_id, data["readme"], readme_dir=readme_dir)
         except Exception as e:
             print(f"Error processing {item_id}: {e}")
+
+    async def _download_dataset_async(
+        self,
+        dataset_id: str,
+        metadata_dir: str,
+        readme_dir: str,
+        semaphore: asyncio.Semaphore,
+    ) -> Dict[str, Any]:
+        """
+        Download a single dataset asynchronously.
+        """
+        async with semaphore:
+            try:
+                metadata_path = Path(metadata_dir) / f"{dataset_id.replace('/', '__')}.json"
+                if metadata_path.exists():
+                    return {"dataset_id": dataset_id, "status": "skipped", "reason": "already exists"}
+
+                data = self.collect_one(dataset_id)
+                if "error" not in data:
+                    self.save_metadata(dataset_id, data["metadata"], metadata_dir=metadata_dir)
+                    if data["readme"]:
+                        self.save_readme(dataset_id, data["readme"], readme_dir=readme_dir)
+                    return {"dataset_id": dataset_id, "status": "success"}
+                else:
+                    return {"dataset_id": dataset_id, "status": "error", "reason": data["error"]}
+
+            except Exception as e:
+                return {"dataset_id": dataset_id, "status": "error", "reason": str(e)}
+
+    async def _download_all_async(
+        self,
+        datasets: List[Dict[str, Any]],
+        metadata_dir: str,
+        readme_dir: str,
+        max_concurrent: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Download multiple datasets concurrently.
+        """
+        Path(metadata_dir).mkdir(parents=True, exist_ok=True)
+        Path(readme_dir).mkdir(parents=True, exist_ok=True)
+
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        tasks = []
+        for dataset in datasets:
+            dataset_id = dataset["id"] if isinstance(dataset, dict) else dataset.id
+            task = self._download_dataset_async(
+                dataset_id, metadata_dir, readme_dir, semaphore
+            )
+            tasks.append(task)
+
+        results = []
+        success_count = 0
+        error_count = 0
+        skipped_count = 0
+        with tqdm(total=len(tasks), desc="Downloading datasets") as pbar:
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                results.append(result)
+
+                if result["status"] == "success":
+                    success_count += 1
+                elif result["status"] == "error":
+                    error_count += 1
+                elif result["status"] == "skipped":
+                    skipped_count += 1
+
+                pbar.update(1)
+                pbar.set_postfix(
+                    {"success": success_count, "error": error_count, "skipped": skipped_count}
+                )
+        return results
+
+    def collect_top_datasets(
+        self,
+        limit: int,
+        metadata_dir: str,
+        readme_dir: str,
+        max_concurrent: int,
+        cache_file: str = "cached_datasets.json",
+        force_refresh: bool = False,
+    ) -> None:
+        """
+        Downloads metadata and READMEs for top Hugging Face datasets.
+        """
+        all_datasets = None
+        if not force_refresh:
+            all_datasets = self.load_cached_datasets(cache_file)
+
+        if all_datasets is None:
+            print("Fetching dataset list from HuggingFace Hub...")
+            try:
+                all_datasets = list(self.api.list_datasets(sort="downloads", full=True))
+                self.save_cached_datasets(all_datasets, cache_file)
+            except Exception as e:
+                print(f"Error fetching datasets: {e}")
+                return
+
+        if limit:
+            all_datasets = all_datasets[:limit]
+
+        print(f"Downloading top {len(all_datasets)} datasets by downloads...")
+        print(f"Starting download with {max_concurrent} concurrent requests...")
+
+        results = asyncio.run(
+            self._download_all_async(all_datasets, metadata_dir, readme_dir, max_concurrent)
+        )
+
+        success_count = sum(1 for r in results if r["status"] == "success")
+        error_count = sum(1 for r in results if r["status"] == "error")
+        skipped_count = sum(1 for r in results if r["status"] == "skipped")
+
+        print("\n📊 Download Summary:")
+        print(f"   ✅ Success: {success_count}")
+        print(f"   ⚠️  Skipped: {skipped_count}")
+        print(f"   ❌ Errors: {error_count}")
+
+        if error_count > 0:
+            print("\n❌ Failed downloads:")
+            for result in results:
+                if result["status"] == "error":
+                    print(f"   - {result['dataset_id']}: {result['reason']}")
+
+        print("\n✅ Download complete.")
+        print(f"   - Metadata saved to: {metadata_dir}")
+        print(f"   - READMEs saved to: {readme_dir}")
+
+    @staticmethod
+    def load_cached_datasets(cache_file: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load cached dataset list from JSON file.
+        """
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                datasets = json.load(f)
+            print(f"Loaded {len(datasets)} datasets from cache: {cache_file}")
+            return datasets
+        except FileNotFoundError:
+            print(f"Cache file not found: {cache_file}")
+            return None
+        except Exception as e:
+            print(f"Error loading cache: {e}")
+            return None
+
+    @staticmethod
+    def save_cached_datasets(datasets: List[Any], cache_file: str) -> None:
+        """
+        Save dataset list to JSON cache file.
+        """
+        try:
+            dataset_dicts = []
+            for dataset in datasets:
+                dataset_dict = {
+                    "id": dataset.id,
+                    "downloads": getattr(dataset, "downloads", 0),
+                    "likes": getattr(dataset, "likes", 0),
+                    "author": getattr(dataset, "author", ""),
+                    "tags": getattr(dataset, "tags", []),
+                    "private": getattr(dataset, "private", False),
+                    "last_modified": str(getattr(dataset, "last_modified", ""))
+                    if hasattr(dataset, "last_modified")
+                    else "",
+                }
+                dataset_dicts.append(dataset_dict)
+
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(dataset_dicts, f, indent=2, ensure_ascii=False)
+
+            print(f"Saved {len(datasets)} datasets to cache: {cache_file}")
+
+        except Exception as e:
+            print(f"Error saving cache: {e}")
 
     @staticmethod
     def load_metadata(
