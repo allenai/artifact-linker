@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+
 from artifact_graph.utils.graph_builder import load_artifact_graph
 from artifact_graph.utils.graph_visualizer import visualize_graph_interactive
 

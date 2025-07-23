@@ -1,5 +1,5 @@
 import os
-import networkx as nx
+
 import openai
 from tqdm import tqdm
 
@@ -105,13 +105,23 @@ class LLMLinkPredictor:
                 if mode == "neighborhood":
                     model_neighbors = []
                     for neighbor in G.neighbors(model_name):
-                        if neighbor != dataset_name and G.nodes[neighbor].get("type") == "dataset" and "accuracy" in G[model_name][neighbor]:
+                        if (
+                            neighbor != dataset_name
+                            and G.nodes[neighbor].get("type") == "dataset"
+                            and "accuracy" in G[model_name][neighbor]
+                        ):
                             model_neighbors.append((neighbor, G[model_name][neighbor]["accuracy"]))
-                    
+
                     dataset_neighbors = []
                     for neighbor in G.neighbors(dataset_name):
-                        if neighbor != model_name and G.nodes[neighbor].get("type") == "model" and "accuracy" in G[neighbor][dataset_name]:
-                            dataset_neighbors.append((neighbor, G[neighbor][dataset_name]["accuracy"]))
+                        if (
+                            neighbor != model_name
+                            and G.nodes[neighbor].get("type") == "model"
+                            and "accuracy" in G[neighbor][dataset_name]
+                        ):
+                            dataset_neighbors.append(
+                                (neighbor, G[neighbor][dataset_name]["accuracy"])
+                            )
 
                 # Build prompt
                 prompt = self._build_prompt(
@@ -132,18 +142,18 @@ class LLMLinkPredictor:
                     temperature=0.0,
                 )
                 answer = response.choices[0].message.content.strip()
-                
+
                 # Parse result
                 try:
                     prob = float(answer.split()[0])
                     prob = max(0.0, min(1.0, prob))
                 except Exception:
                     prob = None
-                
+
                 results.append(prob)
 
             except Exception as e:
                 print(f"Error predicting for ({model_name}, {dataset_name}): {e}")
                 results.append(None)
-        
+
         return results

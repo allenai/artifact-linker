@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 
 import json
+
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
 
 from artifact_graph.models.gnn_link_predictor import GNNLinkPredictor
-from artifact_graph.utils.graph_builder import load_artifact_graph, load_pyg_graph_from_networkx
+from artifact_graph.utils.graph_builder import (
+    load_artifact_graph,
+    load_pyg_graph_from_networkx,
+)
 
 
 class GNNTrainer:
@@ -19,29 +23,29 @@ class GNNTrainer:
     def train(self, data, train_edges, train_labels, batch_size):
         self.model.train()
         total_loss = 0
-        
+
         if train_edges.size(1) == 0:
             return 0.0
 
         for i in range(0, train_edges.size(1), batch_size):
             # Get batch
-            batch_edges = train_edges[:, i:i+batch_size]
-            batch_labels = train_labels[i:i+batch_size]
+            batch_edges = train_edges[:, i : i + batch_size]
+            batch_labels = train_labels[i : i + batch_size]
 
             # Forward pass
             node_embeddings = self.model(data.x.to(self.device), data.edge_index.to(self.device))
             preds = self.model.predict_accuracy(node_embeddings, batch_edges.to(self.device))
-            
+
             # Compute loss
             loss = self.loss_fn(preds, batch_labels.to(self.device))
-            
+
             # Backward pass
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            
+
             total_loss += loss.item()
-            
+
         return total_loss / (train_edges.size(1) / batch_size)
 
     def evaluate(self, data, eval_edges, eval_labels):
@@ -50,14 +54,16 @@ class GNNTrainer:
             node_embeddings = self.model(data.x.to(self.device), data.edge_index.to(self.device))
             preds = self.model.predict_accuracy(node_embeddings, eval_edges.to(self.device))
             mse = self.loss_fn(preds, eval_labels.to(self.device)).item()
-            
+
         return mse
 
     def predict(self, data, prediction_edges):
         self.model.eval()
         with torch.no_grad():
             node_embeddings = self.model(data.x.to(self.device), data.edge_index.to(self.device))
-            predicted_accuracies = self.model.predict_accuracy(node_embeddings, prediction_edges.to(self.device))
+            predicted_accuracies = self.model.predict_accuracy(
+                node_embeddings, prediction_edges.to(self.device)
+            )
         return predicted_accuracies.cpu().numpy()
 
 
@@ -74,18 +80,20 @@ def main():
 
     # 2. Convert to PyG data object
     data = load_pyg_graph_from_networkx(G)
-    
+
     # 3. Create initial node features (e.g., based on node type)
     # Using 'x' from data object which is one-hot encoded
     feature_dim = data.x.size(1)
-    
+
     # 4. Split edges
     # The graph builder only includes edges with metrics, under the key 'acc'
-    has_accuracy = torch.tensor([d.get('acc') is not None for u, v, d in G.edges(data=True)])
-    
+    has_accuracy = torch.tensor([d.get("acc") is not None for u, v, d in G.edges(data=True)])
+
     known_edges = data.edge_index[:, has_accuracy]
-    known_labels = torch.tensor([d['acc'] for u, v, d in G.edges(data=True) if d.get('acc') is not None], dtype=torch.float)
-    
+    known_labels = torch.tensor(
+        [d["acc"] for u, v, d in G.edges(data=True) if d.get("acc") is not None], dtype=torch.float
+    )
+
     prediction_edges = data.edge_index[:, ~has_accuracy]
 
     # Setup model, optimizer, and loss
@@ -96,20 +104,20 @@ def main():
 
     # 5. Training loop
     print("Starting training...")
-    if known_edges.size(1) > 2: # Need at least 3 edges for a train/val/predict split
+    if known_edges.size(1) > 2:  # Need at least 3 edges for a train/val/predict split
         perm = torch.randperm(known_edges.size(1))
-        
+
         # Split data: 70% train, 15% validation, 15% prediction (for LLM eval)
         train_size = int(0.7 * perm.numel())
         val_size = int(0.15 * perm.numel())
-        
+
         train_edges = known_edges[:, perm[:train_size]]
         val_edges = known_edges[:, perm[train_size : train_size + val_size]]
-        prediction_edges = known_edges[:, perm[train_size + val_size:]]
-        
+        prediction_edges = known_edges[:, perm[train_size + val_size :]]
+
         train_labels = known_labels[perm[:train_size]]
         val_labels = known_labels[perm[train_size : train_size + val_size]]
-        prediction_labels = known_labels[perm[train_size + val_size:]]
+        prediction_labels = known_labels[perm[train_size + val_size :]]
 
         # Print the dev split (validation set)
         print("\n--- Validation (Dev) Set Links ---")
@@ -133,15 +141,19 @@ def main():
             dst_name = node_names[dst_idx]
             model_name = src_name if data.node_type[src_idx] == 0 else dst_name
             dataset_name = dst_name if data.node_type[src_idx] == 0 else src_name
-            validation_data_for_llm.append({
-                "model": model_name,
-                "dataset": dataset_name,
-                "accuracy": prediction_labels[i].item()
-            })
-        
+            validation_data_for_llm.append(
+                {
+                    "model": model_name,
+                    "dataset": dataset_name,
+                    "accuracy": prediction_labels[i].item(),
+                }
+            )
+
         with open("output/gnn_validation_set.json", "w") as f:
             json.dump(validation_data_for_llm, f, indent=2)
-        print(f"Saved {len(validation_data_for_llm)} edges for LLM validation to output/gnn_validation_set.json")
+        print(
+            f"Saved {len(validation_data_for_llm)} edges for LLM validation to output/gnn_validation_set.json"
+        )
 
         for epoch in range(50):
             train_loss = trainer.train(data, train_edges, train_labels, batch_size=64)
@@ -155,9 +167,11 @@ def main():
     if prediction_edges.size(1) > 0:
         print("\nEvaluating GNN on the held-out prediction set...")
         predicted_accuracies = trainer.predict(data, prediction_edges)
-        
+
         # 7. Evaluate and print prediction results
-        prediction_mse = nn.functional.mse_loss(torch.tensor(predicted_accuracies), prediction_labels).item()
+        prediction_mse = nn.functional.mse_loss(
+            torch.tensor(predicted_accuracies), prediction_labels
+        ).item()
         print(f"\nGNN Prediction set MSE: {prediction_mse:.4f}")
 
         print("\n--- GNN Prediction Results ---")
@@ -171,7 +185,9 @@ def main():
             dataset_name = dst_name if data.node_type[src_idx] == 0 else src_name
             pred_acc = predicted_accuracies[i]
             true_acc = prediction_labels[i].item()
-            print(f"  - Model: {model_name}, Dataset: {dataset_name} -> Predicted: {pred_acc:.4f}, Actual: {true_acc:.4f}")
+            print(
+                f"  - Model: {model_name}, Dataset: {dataset_name} -> Predicted: {pred_acc:.4f}, Actual: {true_acc:.4f}"
+            )
         print("------------------------------")
 
     else:
@@ -179,4 +195,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

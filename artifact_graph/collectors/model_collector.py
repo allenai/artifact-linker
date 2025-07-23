@@ -1,13 +1,12 @@
 import json
 import os
-import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from huggingface_hub import HfApi, hf_hub_download
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 
 
 def ensure_directory(path: Path) -> None:
@@ -26,20 +25,6 @@ class ModelCollector:
             raise ValueError("HF_TOKEN must be provided or set as env var.")
         self.api = HfApi(token=self.token)
 
-    def _extract_model_info(self, model) -> Dict[str, Any]:
-        """Extracts selected fields from a model listing entry."""
-        return {
-            "modelId": model.id,
-            "sha": getattr(model, "sha", None),
-            "lastModified": getattr(model, "lastModified", ""),
-            "pipeline_tag": getattr(model, "pipeline_tag", None),
-            "tags": getattr(model, "tags", []),
-            "likes": getattr(model, "likes", None),
-            "downloads": getattr(model, "downloads", None),
-            "private": getattr(model, "private", False),
-            "author": getattr(model, "author", None),
-        }
-
     def _safe_card_field(self, info: Any, field: str) -> Any:
         """Safely retrieve a field from model card metadata."""
         try:
@@ -56,7 +41,9 @@ class ModelCollector:
             meta = {
                 "modelId": detailed.id,
                 "sha": getattr(detailed, "sha", None),
-                "lastModified": getattr(detailed, "lastModified", ""),
+                "lastModified": str(detailed.lastModified)
+                if hasattr(detailed, "lastModified") and detailed.lastModified
+                else None,
                 "pipeline_tag": getattr(detailed, "pipeline_tag", None),
                 "tags": getattr(detailed, "tags", []),
                 "likes": getattr(detailed, "likes", None),
@@ -72,7 +59,7 @@ class ModelCollector:
             meta["baseModel"] = base
             return meta
         except Exception as e:
-            raise ValueError(f"Failed to fetch model '{model_id}': {str(e)}")
+            return {"error": f"Failed to fetch model '{model_id}': {str(e)}"}
 
     def collect_readme(self, model_id: str) -> Optional[bytes]:
         """Download README.md for a model and return its bytes, without saving."""
@@ -118,60 +105,153 @@ class ModelCollector:
     def collect_one(
         self,
         model_id: str,
-    ) -> Dict[str, Union[Dict[str, Any], Optional[bytes]]]:
-        """Collect metadata and readme content without saving files."""
+    ) -> Dict[str, Union[Dict[str, Any], Optional[bytes], str]]:
+        """Collect metadata and readme content for one model."""
         metadata = self.collect_metadata(model_id)
-        readme_bytes = self.collect_readme(model_id)
-        return {"metadata": metadata, "readme": readme_bytes}
+        if "error" in metadata:
+            return {"model_id": model_id, "status": "error", "reason": metadata["error"]}
 
-    def collect_batch(
-        self,
-        model_ids: List[str],
-        pause: float = 0.2,
+        readme_bytes = self.collect_readme(model_id)
+        return {"model_id": model_id, "status": "success", "metadata": metadata, "readme": readme_bytes}
+
+    def _process_and_save_item(
+        self, model: Any, metadata_dir: str, readme_dir: str
     ) -> Dict[str, Any]:
-        """Iterates over a list of model IDs and collects each one."""
-        results = {}
-        for mid in model_ids:
-            try:
-                results[mid] = self.collect_one(mid)
-            except Exception as e:
-                results[mid] = {"error": str(e)}
-            time.sleep(pause)
+        """Helper function to process and save a single item for parallel execution."""
+        model_id = model["id"] if isinstance(model, dict) else model.id
+        metadata_path = Path(metadata_dir) / f"{model_id.replace('/', '__')}.json"
+        if metadata_path.exists():
+            return {"model_id": model_id, "status": "skipped", "reason": "already exists"}
+
+        result = self.collect_one(model_id)
+
+        if result["status"] == "success":
+            self.save_metadata(model_id, result["metadata"], metadata_dir)
+            if result["readme"]:
+                self.save_readme(model_id, result["readme"], readme_dir)
+        return result
+
+    def collect_all(
+        self,
+        models: List[Any],
+        metadata_dir: str,
+        readme_dir: str,
+        max_concurrent: int,
+    ) -> List[Dict[str, Any]]:
+        """Collects all models, saving them progressively in parallel using threads."""
+        ensure_directory(Path(metadata_dir))
+        ensure_directory(Path(readme_dir))
+
+        results = []
+        with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+            process_func = partial(
+                self._process_and_save_item,
+                metadata_dir=metadata_dir,
+                readme_dir=readme_dir,
+            )
+            with tqdm(total=len(models), desc="Downloading models") as pbar:
+                for result in executor.map(process_func, models):
+                    results.append(result)
+                    pbar.update(1)
         return results
 
-    def collect_all(self, sort: str = "downloads", limit: Optional[int] = None, metadata_dir: str = "output/models/metadata", readme_dir: str = "output/models/readmes", max_workers: int = 5) -> None:
-        """Collects all models, sorted and optionally limited, and saves them progressively in parallel."""
-        print("Fetching model list...")
-        start_time = time.time()
-        models = list(self.api.list_models(sort=sort, full=True))
+    def collect_top_models(
+        self,
+        limit: int,
+        metadata_dir: str,
+        readme_dir: str,
+        max_concurrent: int,
+        cache_file: str = "cached_models.json",
+        force_refresh: bool = False,
+    ) -> None:
+        """
+        Downloads metadata and READMEs for top Hugging Face models.
+        """
+        all_models = None
+        if not force_refresh:
+            all_models = self.load_cached_models(cache_file)
+
+        if all_models is None:
+            print("Fetching model list from HuggingFace Hub...")
+            try:
+                all_models = list(self.api.list_models(sort="downloads", full=True))
+                self.save_cached_models(all_models, cache_file)
+            except Exception as e:
+                print(f"Error fetching models: {e}")
+                return
+
         if limit:
-            models = models[:limit]
-        print(f"Finished fetching model list in {time.time() - start_time:.2f} seconds.")
+            all_models = all_models[:limit]
 
-        Path(metadata_dir).mkdir(parents=True, exist_ok=True)
-        Path(readme_dir).mkdir(parents=True, exist_ok=True)
+        print(f"Downloading top {len(all_models)} models by downloads...")
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            process_func = partial(self._process_and_save_item, item_type='model', metadata_dir=metadata_dir, readme_dir=readme_dir)
-            list(tqdm(executor.map(process_func, models), total=len(models), desc="Collecting and saving models"))
+        print(f"Starting download with {max_concurrent} concurrent requests...")
+        results = self.collect_all(all_models, metadata_dir, readme_dir, max_concurrent)
 
-    def _process_and_save_item(self, item: Any, item_type: str, metadata_dir: str, readme_dir: str) -> None:
-        """Helper function to process and save a single item (model or dataset)."""
-        item_id = item.id
-        
-        # Skip if metadata file already exists
-        metadata_path = Path(metadata_dir) / f"{item_id.replace('/', '__')}.json"
-        if metadata_path.exists():
-            return
+        success_count = sum(1 for r in results if r["status"] == "success")
+        error_count = sum(1 for r in results if r["status"] == "error")
+        skipped_count = sum(1 for r in results if r["status"] == "skipped")
 
+        print("\n📊 Download Summary:")
+        print(f"   ✅ Success: {success_count}")
+        print(f"   ⚠️  Skipped: {skipped_count}")
+        print(f"   ❌ Errors: {error_count}")
+
+        if error_count > 0:
+            print("\n❌ Failed downloads:")
+            for result in results:
+                if result["status"] == "error":
+                    print(f"   - {result['model_id']}: {result['reason']}")
+
+        print("\n✅ Download complete.")
+        print(f"   - Metadata saved to: {metadata_dir}")
+        print(f"   - READMEs saved to: {readme_dir}")
+
+    @staticmethod
+    def load_cached_models(cache_file: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load cached model list from JSON file.
+        """
         try:
-            data = self.collect_one(item_id)
-            if "error" not in data:
-                self.save_metadata(item_id, data["metadata"], metadata_dir=metadata_dir)
-                if data["readme"]:
-                    self.save_readme(item_id, data["readme"], readme_dir=readme_dir)
+            with open(cache_file, "r", encoding="utf-8") as f:
+                models = json.load(f)
+            print(f"Loaded {len(models)} models from cache: {cache_file}")
+            return models
+        except FileNotFoundError:
+            print(f"Cache file not found: {cache_file}")
+            return None
         except Exception as e:
-            print(f"Error processing {item_id}: {e}")
+            print(f"Error loading cache: {e}")
+            return None
+
+    @staticmethod
+    def save_cached_models(models: List[Any], cache_file: str) -> None:
+        """
+        Save model list to JSON cache file.
+        """
+        try:
+            model_dicts = []
+            for model in models:
+                model_dict = {
+                    "id": model.id,
+                    "downloads": getattr(model, "downloads", 0),
+                    "likes": getattr(model, "likes", 0),
+                    "author": getattr(model, "author", ""),
+                    "tags": getattr(model, "tags", []),
+                    "private": getattr(model, "private", False),
+                    "last_modified": str(getattr(model, "last_modified", ""))
+                    if hasattr(model, "last_modified")
+                    else "",
+                }
+                model_dicts.append(model_dict)
+
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(model_dicts, f, indent=2, ensure_ascii=False)
+
+            print(f"Saved {len(models)} models to cache: {cache_file}")
+
+        except Exception as e:
+            print(f"Error saving cache: {e}")
 
     @staticmethod
     def load_metadata(
