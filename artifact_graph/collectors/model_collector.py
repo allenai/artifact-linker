@@ -1,5 +1,6 @@
 import json
 import os
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -62,15 +63,18 @@ class ModelCollector:
             return {"error": f"Failed to fetch model '{model_id}': {str(e)}"}
 
     def collect_readme(self, model_id: str) -> Optional[bytes]:
-        """Download README.md for a model and return its bytes, without saving."""
+        """Download README.md for a model, returning its bytes without saving."""
         try:
-            src = hf_hub_download(
-                repo_id=model_id,
-                filename="README.md",
-                repo_type="model",
-                token=self.token,
-            )
-            return Path(src).read_bytes()
+            # Suppress the verbose download progress bar
+            with open(os.devnull, 'w') as devnull:
+                with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                    file_path = hf_hub_download(
+                        repo_id=model_id,
+                        filename="README.md",
+                        repo_type="model",
+                        token=self.token,
+                    )
+            return Path(file_path).read_bytes()
         except Exception:
             return None
 
@@ -157,15 +161,23 @@ class ModelCollector:
 
     def collect_top_models(
         self,
-        limit: int,
-        metadata_dir: str,
-        readme_dir: str,
-        max_concurrent: int,
+        min_downloads: int = 100,
+        metadata_dir: str = "output/models/metadata",
+        readme_dir: str = "output/models/readmes",
+        max_concurrent: int = 10,
         cache_file: str = "cached_models.json",
         force_refresh: bool = False,
     ) -> None:
         """
-        Downloads metadata and READMEs for top Hugging Face models.
+        Downloads metadata and READMEs for Hugging Face models with downloads >= min_downloads.
+        
+        Args:
+            min_downloads: Minimum number of downloads required (default: 100)
+            metadata_dir: Directory to save metadata files
+            readme_dir: Directory to save README files
+            max_concurrent: Maximum concurrent downloads
+            cache_file: Path to cache file for model list
+            force_refresh: Force refresh the model list cache
         """
         all_models = None
         if not force_refresh:
@@ -180,14 +192,44 @@ class ModelCollector:
                 print(f"Error fetching models: {e}")
                 return
 
-        if limit:
-            all_models = all_models[:limit]
+        # Filter models by download threshold
+        filtered_models = []
+        total_models = len(all_models)
+        
+        print(f"Filtering {total_models} models by download threshold (>= {min_downloads})...")
+        
+        for model in all_models:
+            downloads = model['downloads']
+            if downloads >= min_downloads:
+                filtered_models.append(model)
+        
+        print(f"Found {len(filtered_models)} models with >= {min_downloads} downloads")
 
-        print(f"Downloading top {len(all_models)} models by downloads...")
+        # Check for already downloaded models
+        print(f"Checking for existing models in {metadata_dir}...")
+        metadata_path = Path(metadata_dir)
+        ensure_directory(metadata_path)
+        existing_model_files = {f.stem for f in metadata_path.glob("*.json")}
+        
+        to_download = []
+        for model in filtered_models:
+            model_id = model.id if not isinstance(model, dict) else model['id']
+            model_fname = model_id.replace("/", "__")
+            if model_fname not in existing_model_files:
+                to_download.append(model)
 
+        print(f"Found {len(existing_model_files)} existing models. Need to download {len(to_download)} new models.")
+
+        if not to_download:
+            print("All models are already up to date.")
+            return
+
+        print(f"Downloading {len(to_download)} new models...")
         print(f"Starting download with {max_concurrent} concurrent requests...")
-        results = self.collect_all(all_models, metadata_dir, readme_dir, max_concurrent)
+        
+        results = self.collect_all(to_download, metadata_dir, readme_dir, max_concurrent)
 
+        # The rest of the summary logic...
         success_count = sum(1 for r in results if r["status"] == "success")
         error_count = sum(1 for r in results if r["status"] == "error")
         skipped_count = sum(1 for r in results if r["status"] == "skipped")
@@ -196,6 +238,8 @@ class ModelCollector:
         print(f"   ✅ Success: {success_count}")
         print(f"   ⚠️  Skipped: {skipped_count}")
         print(f"   ❌ Errors: {error_count}")
+        print(f"   📊 Total models processed: {len(to_download)}")
+        print(f"   🎯 Download threshold: >= {min_downloads}")
 
         if error_count > 0:
             print("\n❌ Failed downloads:")
