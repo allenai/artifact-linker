@@ -60,7 +60,7 @@ class MetricCollector:
             "The output should be: "
             "```"
             "{'GLUE': {'accuracy': 90.5}}"
-            "You need to make sure the there is number in the metric value. If it is empty or the readme does not contain any metrics, return an empty dict."
+            "You need to make sure the there is number in the metric value. If it is empty or the readme does not contain any metrics, return an empty dict. IMPORTANT: You need to make sure the key is the dataset name and the value is the metric value. The number represents the numerical value of this model on this dataset on this metric, nothing else like improvement or so would be included. If the dataset has the organization name like hf-internal-testing, you need to combine the organization name and the dataset name to get the full dataset name, for example, hf-internal-testing/imagefolder_with_metadata."
         )
         try:
             # Note: The 'litellm' library must be configured with an API key
@@ -75,7 +75,7 @@ class MetricCollector:
                 response_format={"type": "json_object"},
             )
             content = resp["choices"][0]["message"]["content"]
-            print(content)
+            content = content.replace("```json", "").replace("```", "").strip()
             return json.loads(content)
         except Exception as e:
             logging.error(f"An error occurred while calling the GPT model: {e}", exc_info=True)
