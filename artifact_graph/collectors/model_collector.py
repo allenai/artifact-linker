@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import contextlib
@@ -66,7 +67,7 @@ class ModelCollector:
         """Download README.md for a model, returning its bytes without saving."""
         try:
             # Suppress the verbose download progress bar
-            with open(os.devnull, 'w') as devnull:
+            with open(os.devnull, "w") as devnull:
                 with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
                     file_path = hf_hub_download(
                         repo_id=model_id,
@@ -116,7 +117,12 @@ class ModelCollector:
             return {"model_id": model_id, "status": "error", "reason": metadata["error"]}
 
         readme_bytes = self.collect_readme(model_id)
-        return {"model_id": model_id, "status": "success", "metadata": metadata, "readme": readme_bytes}
+        return {
+            "model_id": model_id,
+            "status": "success",
+            "metadata": metadata,
+            "readme": readme_bytes,
+        }
 
     def _process_and_save_item(
         self, model: Any, metadata_dir: str, readme_dir: str
@@ -170,7 +176,7 @@ class ModelCollector:
     ) -> None:
         """
         Downloads metadata and READMEs for Hugging Face models with downloads >= min_downloads.
-        
+
         Args:
             min_downloads: Minimum number of downloads required (default: 100)
             metadata_dir: Directory to save metadata files
@@ -195,14 +201,14 @@ class ModelCollector:
         # Filter models by download threshold
         filtered_models = []
         total_models = len(all_models)
-        
+
         print(f"Filtering {total_models} models by download threshold (>= {min_downloads})...")
-        
+
         for model in all_models:
-            downloads = model['downloads']
+            downloads = model["downloads"]
             if downloads >= min_downloads:
                 filtered_models.append(model)
-        
+
         print(f"Found {len(filtered_models)} models with >= {min_downloads} downloads")
 
         # Check for already downloaded models
@@ -210,15 +216,17 @@ class ModelCollector:
         metadata_path = Path(metadata_dir)
         ensure_directory(metadata_path)
         existing_model_files = {f.stem for f in metadata_path.glob("*.json")}
-        
+
         to_download = []
         for model in filtered_models:
-            model_id = model.id if not isinstance(model, dict) else model['id']
+            model_id = model.id if not isinstance(model, dict) else model["id"]
             model_fname = model_id.replace("/", "__")
             if model_fname not in existing_model_files:
                 to_download.append(model)
 
-        print(f"Found {len(existing_model_files)} existing models. Need to download {len(to_download)} new models.")
+        print(
+            f"Found {len(existing_model_files)} existing models. Need to download {len(to_download)} new models."
+        )
 
         if not to_download:
             print("All models are already up to date.")
@@ -226,7 +234,7 @@ class ModelCollector:
 
         print(f"Downloading {len(to_download)} new models...")
         print(f"Starting download with {max_concurrent} concurrent requests...")
-        
+
         results = self.collect_all(to_download, metadata_dir, readme_dir, max_concurrent)
 
         # The rest of the summary logic...
@@ -311,7 +319,7 @@ class ModelCollector:
     @staticmethod
     def load_readme(model_id: str, readme_dir: str = "model_readmes") -> Optional[bytes]:
         """Load saved README file for a given model ID."""
-        fname = model_id.replace("/", "__") + "_README.md"
+        fname = model_id.replace("/", "__") + ".md"
         path = Path(readme_dir) / fname
         if not path.exists():
             return None

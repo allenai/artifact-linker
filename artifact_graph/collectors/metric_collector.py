@@ -1,8 +1,9 @@
 import json
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from litellm import completion
 from tqdm import tqdm
@@ -21,6 +22,30 @@ class MetricCollector:
     def __init__(self):
         self._lock = threading.Lock()
 
+    def extract_metrics_with_gpt(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Extracts evaluation results from README text using a GPT model.
+
+        This method is more robust than regex but slower and requires an API key.
+
+        Args:
+            text: The content of a model's README file.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a found
+            evaluation result, structured similarly to the regex method.
+        """
+        gpt_results = self._ask_gpt(text)
+
+        # The GPT output is expected to be a dictionary where keys are dataset
+        # names and values are metric dicts. We need to convert this to the
+        # list-of-dicts format used by the rest of the system.
+        structured_results = []
+        for dataset_name, metrics in gpt_results.items():
+            if isinstance(metrics, dict):
+                structured_results.append({"dataset": dataset_name, "metrics": metrics})
+        return structured_results
+
     def _ask_gpt(self, text: str) -> Dict[str, Any]:
         """
         Extracts dataset metrics from README text using an LLM.
@@ -28,8 +53,18 @@ class MetricCollector:
         system_prompt = (
             "You are a helpful assistant that extracts evaluation dataset names and corresponding "
             "metrics from README content. Return a JSON dict with dataset names as keys and metric-value maps as values."
+            "For example, if the README contains the following text: "
+            "```"
+            "On [GLUE](https://huggingface.co/datasets/glue) dataset, the model achieves an accuracy of 90.5%."
+            "```"
+            "The output should be: "
+            "```"
+            "{'GLUE': {'accuracy': 90.5}}"
+            "You need to make sure the there is number in the metric value. If it is empty or the readme does not contain any metrics, return an empty dict."
         )
         try:
+            # Note: The 'litellm' library must be configured with an API key
+            # for this to work (e.g., OPENAI_API_KEY).
             resp = completion(
                 model="gpt-4o-mini",
                 messages=[
@@ -37,12 +72,13 @@ class MetricCollector:
                     {"role": "user", "content": text[:12000]},
                 ],
                 temperature=0,
+                response_format={"type": "json_object"},
             )
             content = resp["choices"][0]["message"]["content"]
-            # Remove code fences if present
-            cleaned = content.strip().strip("```json").strip("```")
-            return json.loads(cleaned)
-        except Exception:
+            print(content)
+            return json.loads(content)
+        except Exception as e:
+            logging.error(f"An error occurred while calling the GPT model: {e}", exc_info=True)
             return {}
 
     def process_readme(

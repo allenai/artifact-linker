@@ -1,6 +1,6 @@
+import contextlib
 import json
 import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
@@ -55,7 +55,7 @@ class DatasetCollector:
         """Download README.md for a dataset and return its bytes, without saving."""
         try:
             # Suppress the verbose download progress bar
-            with open(os.devnull, 'w') as devnull:
+            with open(os.devnull, "w") as devnull:
                 with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
                     file_path = hf_hub_download(
                         repo_id=dataset_id,
@@ -108,7 +108,7 @@ class DatasetCollector:
         self, item: Any, metadata_dir: str, readme_dir: str
     ) -> Dict[str, Any]:
         """Helper function to process and save a single item (dataset)."""
-        item_id = item.id if not isinstance(item, dict) else item['id']
+        item_id = item.id if not isinstance(item, dict) else item["id"]
 
         # Skip if metadata file already exists
         metadata_path = Path(metadata_dir) / f"{item_id.replace('/', '__')}.json"
@@ -123,7 +123,11 @@ class DatasetCollector:
                     self.save_readme(item_id, data["readme"], readme_dir=readme_dir)
                 return {"dataset_id": item_id, "status": "success"}
             else:
-                return {"dataset_id": item_id, "status": "error", "reason": data.get("error", "Unknown error")}
+                return {
+                    "dataset_id": item_id,
+                    "status": "error",
+                    "reason": data.get("error", "Unknown error"),
+                }
         except Exception as e:
             return {"dataset_id": item_id, "status": "error", "reason": str(e)}
 
@@ -154,11 +158,9 @@ class DatasetCollector:
                     success_count = sum(1 for r in results if r["status"] == "success")
                     error_count = sum(1 for r in results if r["status"] == "error")
                     skipped_count = sum(1 for r in results if r["status"] == "skipped")
-                    pbar.set_postfix({
-                        "success": success_count,
-                        "errors": error_count,
-                        "skipped": skipped_count
-                    })
+                    pbar.set_postfix(
+                        {"success": success_count, "errors": error_count, "skipped": skipped_count}
+                    )
         return results
 
     def collect_top_datasets(
@@ -172,7 +174,7 @@ class DatasetCollector:
     ) -> None:
         """
         Downloads metadata and READMEs for Hugging Face datasets with downloads >= min_downloads.
-        
+
         Args:
             min_downloads: Minimum number of downloads required (default: 100)
             metadata_dir: Directory to save metadata files
@@ -197,14 +199,18 @@ class DatasetCollector:
         # Filter datasets by download threshold
         filtered_datasets = []
         total_datasets = len(all_datasets)
-        
+
         print(f"Filtering {total_datasets} datasets by download threshold (>= {min_downloads})...")
-        
+
         for dataset in all_datasets:
-            downloads = dataset['downloads'] if isinstance(dataset, dict) else getattr(dataset, "downloads", 0)
+            downloads = (
+                dataset["downloads"]
+                if isinstance(dataset, dict)
+                else getattr(dataset, "downloads", 0)
+            )
             if downloads >= min_downloads:
                 filtered_datasets.append(dataset)
-        
+
         print(f"Found {len(filtered_datasets)} datasets with >= {min_downloads} downloads")
 
         # Check for already downloaded datasets
@@ -212,16 +218,18 @@ class DatasetCollector:
         metadata_path = Path(metadata_dir)
         ensure_directory(metadata_path)
         existing_dataset_files = {f.stem for f in metadata_path.glob("*.json")}
-        
+
         to_download = []
         for dataset in filtered_datasets:
-            dataset_id = dataset.id if not isinstance(dataset, dict) else dataset['id']
+            dataset_id = dataset.id if not isinstance(dataset, dict) else dataset["id"]
             dataset_fname = dataset_id.replace("/", "__")
             if dataset_fname not in existing_dataset_files:
                 to_download.append(dataset)
 
-        print(f"Found {len(existing_dataset_files)} existing datasets. Need to download {len(to_download)} new datasets.")
-        
+        print(
+            f"Found {len(existing_dataset_files)} existing datasets. Need to download {len(to_download)} new datasets."
+        )
+
         if not to_download:
             print("All datasets are already up to date.")
             return
@@ -313,7 +321,7 @@ class DatasetCollector:
     @staticmethod
     def load_readme(dataset_id: str, readme_dir: str = "dataset_readmes") -> Optional[bytes]:
         """Load saved README file for a given dataset ID."""
-        fname = dataset_id.replace("/", "__") + "_README.md"
+        fname = dataset_id.replace("/", "__") + ".md"
         path = Path(readme_dir) / fname
         if not path.exists():
             return None
