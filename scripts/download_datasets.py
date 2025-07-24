@@ -7,21 +7,21 @@ from artifact_graph.collectors.dataset_collector import DatasetCollector
 
 
 def main(
-    limit: int,
+    min_downloads: int,
     hf_token: str,
     cache_file: str,
     force_refresh: bool,
     max_concurrent: int,
 ) -> None:
     """
-    Download metadata and READMEs for top Hugging Face datasets.
+    Download metadata and READMEs for Hugging Face datasets with downloads >= min_downloads.
     """
-    metadata_dir = "output/datasets/metadata"
-    readme_dir = "output/datasets/readmes"
+    metadata_dir = "../data/output/datasets/metadata"
+    readme_dir = "../data/output/datasets/readmes"
 
     collector = DatasetCollector(hf_token=hf_token)
     collector.collect_top_datasets(
-        limit=limit,
+        min_downloads=min_downloads,
         metadata_dir=metadata_dir,
         readme_dir=readme_dir,
         max_concurrent=max_concurrent,
@@ -32,13 +32,13 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Download metadata and READMEs for top Hugging Face datasets."
+        description="Download metadata and READMEs for Hugging Face datasets with downloads >= min_downloads."
     )
     parser.add_argument(
-        "--limit",
+        "--min-downloads",
         type=int,
-        default=100000,
-        help="Number of top datasets to download, sorted by downloads (default: 100000).",
+        default=100,
+        help="Minimum number of downloads required (default: 100).",
     )
     parser.add_argument(
         "--hf_token",
@@ -69,7 +69,7 @@ if __name__ == "__main__":
         raise ValueError("Hugging Face token is required. Set HF_TOKEN or pass --hf_token.")
 
     main(
-        args.limit,
+        args.min_downloads,
         args.hf_token,
         args.cache_file,
         args.force_refresh,
