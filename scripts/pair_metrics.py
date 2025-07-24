@@ -50,7 +50,7 @@ def find_best_dataset_match(
 
 def find_top_dataset_matches(
     extracted_name: str, 
-    dataset_name_map: Dict[str, List[str]], 
+    dataset_name_map: Dict[str, List[Dict[str, Any]]], 
     limit: int = 10
 ) -> List[Dict[str, Any]]:
     """
@@ -73,7 +73,7 @@ def find_top_dataset_matches(
     )
     
     # Format the results into a more useful structure
-    # For each match, we now retrieve a list of possible canonical IDs
+    # For each match, we now retrieve a list of possible canonical IDs with their downloads
     return [
         {"match": match[0], "score": match[1], "ids": dataset_name_map[match[0]]}
         for match in matches
@@ -97,6 +97,7 @@ def pair_metrics(
     datasets_dir: str,
     readmes_dir: str,
     min_model_downloads: int,
+    output_file: str,
     limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
@@ -111,36 +112,55 @@ def pair_metrics(
     
     print(f"Loaded {len(models)} models and {len(datasets)} datasets.")
     
-    # Create a mapping from lowercase dataset names to a list of their canonical IDs
-    dataset_name_map: Dict[str, List[str]] = {}
-    for d in datasets.values():
-        name_only = d['datasetId'].split('/')[-1].lower()
+    # Create a mapping from lowercase dataset names to a list of their canonical IDs and download counts
+    dataset_name_map: Dict[str, List[Dict[str, Any]]] = {}
+    for d_id, d_meta in datasets.items():
+        name_only = d_id.split('/')[-1].lower()
         if name_only not in dataset_name_map:
             dataset_name_map[name_only] = []
-        dataset_name_map[name_only].append(d['datasetId'])
+        dataset_name_map[name_only].append({
+            "id": d_id,
+            "downloads": d_meta.get("downloads", 0)
+        })
     
     metric_collector = MetricCollector()
     
-    all_results = []
-    unmatched_datasets = set()
-    models_with_no_metrics = 0
-    model_ids = list(models.keys())
+    # --- Resumability: Load existing results if they exist ---
+    if Path(output_file).exists():
+        print(f"Loading existing results from {output_file} to resume.")
+        with open(output_file, 'r', encoding='utf-8') as f:
+            all_results = json.load(f).get("pairings", [])
+    else:
+        all_results = []
 
+    processed_model_ids = {p['model_id'] for p in all_results}
+    print(f"Found {len(processed_model_ids)} previously processed models.")
+
+    # --- Filter out already processed models ---
+    model_ids = [mid for mid in list(models.keys()) if mid not in processed_model_ids]
+    
     # Apply the limit if one was provided
     if limit:
         model_ids = model_ids[:limit]
         print(f"Processing a limit of {limit} models.")
 
-    print("Processing models and pairing metrics using GPT...")
+    if not model_ids:
+        print("All models have already been processed.")
+        return {"pairings": all_results, "unmatched_dataset_names": [], "models_with_no_metrics": 0}
+
+    print(f"Processing {len(model_ids)} new models...")
+
+    unmatched_datasets = set()
+    models_with_no_metrics = 0
+    
     with ThreadPoolExecutor(max_workers=8) as executor:
-        # Create futures for each model to be processed
         future_to_model = {
             executor.submit(process_single_model, model_id, readmes_dir, metric_collector): model_id 
             for model_id in model_ids
         }
         
         with tqdm(total=len(model_ids), desc="Pairing Metrics with GPT") as pbar:
-            for future in as_completed(future_to_model):
+            for i, future in enumerate(as_completed(future_to_model)):
                 model_id, eval_results = future.result()
                 pbar.update(1)
                 
@@ -153,13 +173,10 @@ def pair_metrics(
                     dataset_name = raw_result.get('dataset')
                     metrics = raw_result.get('metrics')
 
-                    # Skip if there's no dataset name or no metrics
                     if not dataset_name or not metrics:
                         continue
                         
                     top_matches = find_top_dataset_matches(dataset_name, dataset_name_map)
-                    
-                    # Decide on the best match (if any meet the criteria)
                     best_match = top_matches[0] if top_matches and top_matches[0]['score'] >= 90 else None
                     
                     pairing_result = {
@@ -173,6 +190,18 @@ def pair_metrics(
                     if not best_match:
                         unmatched_datasets.add(dataset_name)
                 
+                # --- Batch Saving Logic ---
+                if (i + 1) % 500 == 0:
+                    pbar.set_description(f"Saving progress... (processed {i+1})")
+                    temp_results = {
+                        "pairings": all_results,
+                        "unmatched_dataset_names": list(unmatched_datasets),
+                        "models_with_no_metrics": models_with_no_metrics,
+                    }
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        json.dump(temp_results, f, indent=2, ensure_ascii=False)
+                    pbar.set_description("Pairing Metrics with GPT")
+
                 # Update progress bar with live stats
                 pbar.set_postfix({
                     "paired": len(all_results),
@@ -232,6 +261,7 @@ def main():
         datasets_dir=args.datasets_dir,
         readmes_dir=args.readmes_dir,
         min_model_downloads=args.min_model_downloads,
+        output_file=args.output_file,
         limit=args.limit,
     )
     
