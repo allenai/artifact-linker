@@ -42,13 +42,23 @@ def iter_triples(combos):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--json-file", default=str(Path(__file__).parent / "perfect_model_dataset_metrics.json"))
+    parser.add_argument(
+        "--json-file", default=str(Path(__file__).parent / "perfect_model_dataset_metrics.json")
+    )
     parser.add_argument("--llm-model", default="gpt-4o")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--max-fixes", type=int, default=15)
-    parser.add_argument("--limit", type=int, default=30, help="Evaluate only first N triples (0 = all)")
-    parser.add_argument("--output-dir", default="simple_results_0801", help="Output directory for results (default: simple_results)")
-    parser.add_argument("--memory-limit", default="8g", help="Docker container memory limit (default: 8g)")
+    parser.add_argument(
+        "--limit", type=int, default=30, help="Evaluate only first N triples (0 = all)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="simple_results_0801",
+        help="Output directory for results (default: simple_results)",
+    )
+    parser.add_argument(
+        "--memory-limit", default="8g", help="Docker container memory limit (default: 8g)"
+    )
     args = parser.parse_args()
 
     combos = load_combinations(Path(args.json_file))
@@ -67,21 +77,24 @@ def main():
 
     print(f"Starting evaluation of {len(triples)} triples...\n")
     for i, (model, dataset, metric) in enumerate(triples, 1):
-        print("="*50)
+        print("=" * 50)
         print(f"[{i}/{len(triples)}] {model} | {dataset} | {metric}")
-        print("="*50)
+        print("=" * 50)
         # Create a safe directory name by replacing invalid characters
         safe_dir = f"{model}_{dataset}_{metric}"
         # Replace all invalid characters for Docker volume names
         import re
-        safe_dir = re.sub(r'[^a-zA-Z0-9._-]', '_', safe_dir)
+
+        safe_dir = re.sub(r"[^a-zA-Z0-9._-]", "_", safe_dir)
         # Remove consecutive underscores
-        safe_dir = re.sub(r'_+', '_', safe_dir)
+        safe_dir = re.sub(r"_+", "_", safe_dir)
         out_dir = f"{args.output_dir}/{safe_dir}"
 
         try:
             # Create a new DockerCoder instance for each evaluation with its own output directory
-            coder = DockerCoder(model=args.llm_model, output_dir=out_dir, memory_limit=args.memory_limit)
+            coder = DockerCoder(
+                model=args.llm_model, output_dir=out_dir, memory_limit=args.memory_limit
+            )
             result = coder.evaluate(
                 model_name=model,
                 dataset_name=dataset,
@@ -126,8 +139,9 @@ def main():
         )
 
     print("\nDone.")
-    print(f"Success: {success_count} / {len(triples)} "
-          f"({success_count / len(triples) * 100:.1f}%)")
+    print(
+        f"Success: {success_count} / {len(triples)} " f"({success_count / len(triples) * 100:.1f}%)"
+    )
     print(f"Summary written to {summary_path}")
 
 

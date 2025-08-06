@@ -58,4 +58,4 @@ RUN git config --global user.email "docker@example.com" && \
 
 # Set environment variables to reduce warnings
 ENV TF_CPP_MIN_LOG_LEVEL=3
-ENV PYTHONWARNINGS=ignore 
+ENV PYTHONWARNINGS=ignore

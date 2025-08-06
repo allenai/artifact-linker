@@ -3,19 +3,20 @@
 """
 
 import os
-from .base import ExperimentPhaseHandler, ExperimentPhase
+
+from .base import ExperimentPhase, ExperimentPhaseHandler
 from .utils.llm import get_response_from_llm
 
 
 class DatasetCheckHandler(ExperimentPhaseHandler):
     """数据集检查处理器"""
-    
+
     def __init__(self, coder, container, run_num: int, max_attempts: int):
         super().__init__(coder, container, run_num, max_attempts)
         self.phase_name = "DATASET CHECK"
         self.script_name = "dataset_check.py"
         self.expected_outputs = ["/workspace/dataset_analysis.json"]
-    
+
     def _generate_fix_prompt(self, error_output: str) -> str:
         """生成数据集检查修复提示"""
         return f"""
@@ -31,17 +32,17 @@ Common issues and solutions:
 
 Please fix the script to handle these issues robustly.
 """
-    
+
     def _get_phase_enum(self) -> ExperimentPhase:
         return ExperimentPhase.DATASET_CHECK
 
 
 class DatasetCheckGenerator:
     """数据集检查脚本生成器"""
-    
+
     def __init__(self, coder):
         self.coder = coder
-    
+
     def generate_dataset_check(self, dataset_name: str) -> bool:
         """生成数据集检查脚本"""
         prompt = f"""
@@ -78,37 +79,38 @@ Return only the complete Python code for dataset_check.py.
                 msg=prompt,
                 client=self.coder.client,
                 model=self.coder.actual_model,
-                system_message="You are an expert data engineer. Generate a robust dataset download and analysis script that can be improved with Aider."
+                system_message="You are an expert data engineer. Generate a robust dataset download and analysis script that can be improved with Aider.",
             )
-            
+
             code = self._extract_code(response)
-            
+
             file_path = os.path.join(self.coder.output_dir, "dataset_check.py")
-            with open(file_path, 'w') as f:
+            with open(file_path, "w") as f:
                 f.write(code)
-            
+
             print(f"dataset_check.py generated ({len(code)} characters)")
             return True
-            
+
         except Exception as e:
             print(f"Failed to generate dataset_check.py: {e}")
             return False
-    
+
     def _extract_code(self, response: str) -> str:
         """从响应中提取代码"""
         # 查找代码块
         patterns = [
-            r'```python\n(.*?)\n```',
-            r'```\n(.*?)\n```',
-            r'```python(.*?)```',
-            r'```(.*?)```'
+            r"```python\n(.*?)\n```",
+            r"```\n(.*?)\n```",
+            r"```python(.*?)```",
+            r"```(.*?)```",
         ]
-        
+
         import re
+
         for pattern in patterns:
             match = re.search(pattern, response, re.DOTALL)
             if match:
                 return match.group(1).strip()
-        
+
         # 如果没找到代码块，返回整个响应
-        return response.strip() 
+        return response.strip()

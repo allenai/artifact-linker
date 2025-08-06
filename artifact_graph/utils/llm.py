@@ -7,6 +7,7 @@ import anthropic
 import backoff
 import openai
 import toml
+
 # from google.generativeai.types import GenerationConfig
 
 # from .budget_checker import BudgetChecker
@@ -112,9 +113,7 @@ def get_batch_responses_from_llm(
             seed=0,
         )
         content = [r.message.content for r in response.choices]
-        new_msg_history = [
-            new_msg_history + [{"role": "assistant", "content": c}] for c in content
-        ]
+        new_msg_history = [new_msg_history + [{"role": "assistant", "content": c}] for c in content]
         if hasattr(response, "usage"):
             input_tokens = getattr(response.usage, "prompt_tokens", 0)
             output_tokens = getattr(response.usage, "completion_tokens", 0)
@@ -134,9 +133,7 @@ def get_batch_responses_from_llm(
             stop=None,
         )
         content = [r.message.content for r in response.choices]
-        new_msg_history = [
-            new_msg_history + [{"role": "assistant", "content": c}] for c in content
-        ]
+        new_msg_history = [new_msg_history + [{"role": "assistant", "content": c}] for c in content]
         if hasattr(response, "usage"):
             input_tokens = getattr(response.usage, "prompt_tokens", 0)
             output_tokens = getattr(response.usage, "completion_tokens", 0)
@@ -354,7 +351,9 @@ def get_response_from_llm(
             output_tokens = getattr(response.usage, "completion_tokens", 0)
     elif "gemini" in model:
         # Gemini support disabled due to missing google.generativeai dependency
-        raise ValueError(f"Gemini models not supported in this environment. Please install google-generativeai package or use a different model.")
+        raise ValueError(
+            "Gemini models not supported in this environment. Please install google-generativeai package or use a different model."
+        )
         # new_msg_history = msg_history + [{"role": "user", "content": msg}]
         # gemini_contents = [{"role": "system", "parts": system_message}]
         # for m in new_msg_history:
@@ -369,9 +368,7 @@ def get_response_from_llm(
         # )
         # content = response.text
         # new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif any(
-        model.startswith(prefix) for prefix in ["ollama/", "lm_studio/", "openai/"]
-    ):
+    elif any(model.startswith(prefix) for prefix in ["ollama/", "lm_studio/", "openai/"]):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model.split("/")[1],
@@ -481,14 +478,10 @@ def get_batch_responses_from_llm_with_tools(
 
             # Extract token usage for OpenAI
             input_tokens = (
-                getattr(response.usage, "prompt_tokens", 0)
-                if hasattr(response, "usage")
-                else 0
+                getattr(response.usage, "prompt_tokens", 0) if hasattr(response, "usage") else 0
             )
             output_tokens = (
-                getattr(response.usage, "completion_tokens", 0)
-                if hasattr(response, "usage")
-                else 0
+                getattr(response.usage, "completion_tokens", 0) if hasattr(response, "usage") else 0
             )
             if cost_tracker is not None:
                 cost_tracker.add_cost(model, input_tokens, output_tokens, task_name)
@@ -524,9 +517,7 @@ def get_batch_responses_from_llm_with_tools(
                     # Store text response
                     content = response_message.content or ""
                     all_responses.append(content)
-                    all_new_histories.append(
-                        current_history
-                    )  # History is complete here
+                    all_new_histories.append(current_history)  # History is complete here
 
         except Exception as e:
             print(f"Error during LLM call with tools: {e}")
@@ -561,9 +552,7 @@ def get_batch_responses_from_llm_with_tools(
             )
 
             input_tokens = (
-                getattr(response, "prompt_tokens", 0)
-                if hasattr(response, "prompt_tokens")
-                else 0
+                getattr(response, "prompt_tokens", 0) if hasattr(response, "prompt_tokens") else 0
             )
             output_tokens = (
                 getattr(response, "completion_tokens", 0)
@@ -579,10 +568,7 @@ def get_batch_responses_from_llm_with_tools(
                     {"role": "assistant", "content": response_message.content or ""}
                 ]
 
-                if (
-                    hasattr(response_message, "tool_calls")
-                    and response_message.tool_calls
-                ):
+                if hasattr(response_message, "tool_calls") and response_message.tool_calls:
                     # Store tool call information for Together AI
                     tool_call_info = {
                         "tool_calls": [

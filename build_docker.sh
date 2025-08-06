@@ -15,12 +15,12 @@ if [ $? -eq 0 ]; then
     echo "✅ Docker image built successfully!"
     echo "📋 Image details:"
     docker images simple-coder:latest
-    
+
     echo ""
     echo "🧪 Testing the image..."
     echo "  📦 Python version:"
     docker run --rm simple-coder:latest python --version
-    
+
     echo "  📚 Key packages:"
     docker run --rm simple-coder:latest python -c "
 import torch, transformers, datasets
@@ -28,14 +28,14 @@ print(f'  PyTorch: {torch.__version__}')
 print(f'  Transformers: {transformers.__version__}')
 print(f'  Datasets: {datasets.__version__}')
 "
-    
+
     echo "  🔇 Warning suppression test:"
     docker run --rm simple-coder:latest python -c "
 import os
 print(f'  TF_CPP_MIN_LOG_LEVEL: {os.environ.get(\"TF_CPP_MIN_LOG_LEVEL\")}')
 print(f'  PYTHONWARNINGS: {os.environ.get(\"PYTHONWARNINGS\")}')
 "
-    
+
     echo ""
     echo "🎯 Image is ready for use!"
     echo "💡 Usage examples:"
@@ -50,4 +50,4 @@ print(f'  PYTHONWARNINGS: {os.environ.get(\"PYTHONWARNINGS\")}')
 else
     echo "❌ Docker build failed!"
     exit 1
-fi 
+fi
