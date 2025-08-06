@@ -1,153 +1,125 @@
 """
-模型检查器 - 负责生成和执行模型检查脚本
+Model checker - responsible for generating and executing model check scripts
 """
 
-import os
-
+import json
+import re
+from typing import Dict, Any, Optional
 import requests
 
-from .base import ExperimentPhase, ExperimentPhaseHandler
-from .utils.llm import get_response_from_llm
+from .base import ExperimentPhase
 
-
-class ModelCheckHandler(ExperimentPhaseHandler):
-    """模型检查处理器"""
-
-    def __init__(self, coder, container, run_num: int, max_attempts: int):
-        super().__init__(coder, container, run_num, max_attempts)
-        self.phase_name = "MODEL CHECK"
-        self.script_name = "model_check.py"
-        self.expected_outputs = ["/workspace/model_analysis.json"]
-
-    def _generate_fix_prompt(self, error_output: str) -> str:
-        """生成模型检查修复提示"""
-        return f"""
-Fix the model_check.py script. The error is:
-{error_output}
-
-Common issues and solutions:
-1. If transformers library fails - try updating transformers
-2. If CUDA/GPU issues - fallback to CPU mode
-3. If model is too large - use smaller model variant or quantization
-4. If authentication fails - check HF_TOKEN environment variable
-5. If download fails - try different model or check model ID
-6. Always save results to model_analysis.json
-
-Please fix the script to handle these issues robustly, with CPU fallbacks.
-"""
-
-    def _get_phase_enum(self) -> ExperimentPhase:
-        return ExperimentPhase.MODEL_CHECK
 
 
 class ModelCheckGenerator:
-    """模型检查脚本生成器"""
-
+    """Model check script generator"""
+    
     def __init__(self, coder):
         self.coder = coder
+        self.client = coder.client
+    
+    def generate_script(self, model_name: str, dataset_name: str, dataset_metadata: dict = None, model_readme: str = None) -> str:
+        """Generate model check script with dataset compatibility testing"""
+        
+        # Format dataset metadata for the prompt
+        dataset_info = ""
+        if dataset_metadata:
+            dataset_info = f"""
 
-    def generate_model_check(self, model_name: str, model_readme: str) -> bool:
-        """生成模型检查脚本"""
-        prompt = f"""
-Create a Python script to analyze the model: {model_name}
+DATASET CONTEXT (for compatibility testing):
+Dataset: {dataset_name}
+Splits: {dataset_metadata.get('splits', {})}
+Sample Examples: {dataset_metadata.get('sample_examples', [])}
 
-Model information from README:
-{model_readme[:1000] if model_readme else "No README available"}
-
-The script should:
-1. Import necessary libraries (transformers, torch, json, os, etc.)
-2. Load model and tokenizer with robust error handling
-3. Analyze model properties:
-   - Model architecture and size
-   - Input/output specifications
-   - Device capabilities (GPU/CPU)
-   - Memory requirements
-   - Supported tasks and formats
-4. Test model inference with sample inputs
-5. Handle authentication with HF_TOKEN if needed
-6. Save comprehensive analysis to model_analysis.json
-7. Include fallbacks for:
-   - GPU unavailable -> use CPU
-   - Large models -> use smaller precision
-   - Authentication issues
-   - Memory constraints
-
-Key requirements:
-- Graceful degradation from GPU to CPU
-- Robust error handling and retries
-- Save model_analysis.json with complete information
-- Test actual model functionality
-
-Return only the complete Python code for model_check.py.
+Use these actual dataset examples to test model compatibility!
 """
 
-        try:
-            print("🤖 Generating model_check.py...")
-            response, _ = get_response_from_llm(
-                msg=prompt,
-                client=self.coder.client,
-                model=self.coder.actual_model,
-                system_message="You are an expert ML engineer. Generate a robust model analysis script that can be improved with Aider.",
-            )
+        # Format model README for inclusion in script
+        model_readme_section = ""
+        if model_readme:
+            # Clean and truncate README for inclusion
+            clean_readme = model_readme.replace('"""', "'''").replace('\\', '\\\\')[:2000]
+            model_readme_section = f'''
 
-            code = self._extract_code(response)
+# Include model README information as documentation
+MODEL_README = """
+{clean_readme}
+"""
+'''
+        
+        prompt = f"""
+Generate a model checking script for the HuggingFace model: {model_name}
+{dataset_info}
 
-            file_path = os.path.join(self.coder.output_dir, "model_check.py")
-            with open(file_path, "w") as f:
-                f.write(code)
+IMPORTANT: refer to the following model README section for the dataset information:
+{model_readme_section}
 
-            print(f"model_check.py generated ({len(code)} characters)")
-            return True
+Requirements:
+1. Load and verify the model can be instantiated
+2. Run model inference on the provided dataset examples (any output is fine)
+3. Ensure the code executes without errors
 
-        except Exception as e:
-            print(f"Failed to generate model_check.py: {e}")
-            return False
+Save results to 'model_metadata.json' with this simplified structure:
+{{
+    "model_name": "{model_name}",
+    "status": "success/error",
+    "runnable": "yes/no", 
+    "error": "error message if any"
+}}
 
+Focus on making the code runnable, not on correctness of results.
+Handle common issues gracefully:
+- Missing model files
+- Authentication requirements  
+- Model loading errors
+- Runtime exceptions
+
+Generate a complete Python script named 'model_check.py' that accomplishes these tasks.
+"""
+        
+        response = self.client.chat.completions.create(
+            model=self.coder.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        
+        script = response.choices[0].message.content
+        
+        # Extract code block if present
+        if "```python" in script:
+            script = script.split("```python")[1].split("```")[0]
+        elif "```" in script:
+            script = script.split("```")[1].split("```")[0]
+        
+        # If no code block found, return entire response
+        return script.strip()
+    
+    def get_stage(self) -> ExperimentPhase:
+        return ExperimentPhase.MODEL_CHECK
+    
     def get_model_readme(self, model_name: str) -> str:
-        """获取模型的README信息"""
+        """Get model README information"""
         try:
-            print(f"Fetching README for {model_name}...")
-
-            # 尝试通过HuggingFace API获取模型信息
-            url = f"https://huggingface.co/api/models/{model_name}"
-            response = requests.get(url, timeout=10)
-
+            # Try to get model info via HuggingFace API
+            api_url = f"https://huggingface.co/api/models/{model_name}"
+            response = requests.get(api_url, timeout=10)
+            
             if response.status_code == 200:
                 model_info = response.json()
-                return model_info.get("cardData", {}).get("readme", "")
-            else:
-                print(f"Failed to fetch model info: {response.status_code}")
-
-            # 如果API失败，尝试直接获取README
+                return json.dumps(model_info, indent=2)
+        except Exception as e:
+            print(f"API request failed: {e}")
+        
+        # If API fails, try to get README directly
+        try:
             readme_url = f"https://huggingface.co/{model_name}/raw/main/README.md"
             response = requests.get(readme_url, timeout=10)
-
+            
             if response.status_code == 200:
-                return response.text[:2000]  # 限制长度
-            else:
-                print(f"Failed to fetch README: {response.status_code}")
-                return ""
-
+                return response.text[:2000]  # Limit length
         except Exception as e:
-            print(f"Error fetching model README: {e}")
-            return ""
+            print(f"README request failed: {e}")
+        
+        return f"Model: {model_name} (no additional info available)"
+    
 
-    def _extract_code(self, response: str) -> str:
-        """从响应中提取代码"""
-        # 查找代码块
-        patterns = [
-            r"```python\n(.*?)\n```",
-            r"```\n(.*?)\n```",
-            r"```python(.*?)```",
-            r"```(.*?)```",
-        ]
-
-        import re
-
-        for pattern in patterns:
-            match = re.search(pattern, response, re.DOTALL)
-            if match:
-                return match.group(1).strip()
-
-        # 如果没找到代码块，返回整个响应
-        return response.strip()

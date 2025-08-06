@@ -60,7 +60,6 @@ def evaluate_single_triple(args_tuple):
             model_name=model,
             dataset_name=dataset,
             metric=metric,
-            max_runs=runs,
             max_fixes=max_fixes,
         )
 

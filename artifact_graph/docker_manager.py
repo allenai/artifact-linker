@@ -1,5 +1,5 @@
 """
-Docker容器管理器 - 负责Docker容器的创建、配置和管理
+Docker container manager - responsible for Docker container creation, configuration and management
 """
 
 import os
@@ -9,7 +9,7 @@ import docker.types
 
 
 class DockerManager:
-    """Docker容器管理器"""
+    """Docker container manager"""
     
     def __init__(
         self, 
@@ -29,7 +29,7 @@ class DockerManager:
         output_dir: str, 
         environment_vars: Optional[Dict[str, str]] = None
     ) -> Optional[Any]:
-        """创建并启动Docker容器"""
+        """Create and start Docker container"""
         try:
             # 先创建输出目录，确保是当前用户权限
             os.makedirs(output_dir, exist_ok=True)
@@ -95,7 +95,7 @@ class DockerManager:
         workdir: str = "/workspace",
         timeout: Optional[int] = None
     ) -> tuple[int, str]:
-        """在容器中执行命令"""
+        """Execute command in container"""
         if not self.container:
             raise RuntimeError("Container not created. Call create_container() first.")
         
@@ -117,9 +117,8 @@ class DockerManager:
         """执行Python脚本（带超时控制）"""
         print(f"🔄 Executing {script_name} with {timeout}s timeout...")
         
-        # 为重要的评估脚本增加超时时间
-        if script_name == "evaluate.py":
-            timeout = 600  # 10分钟
+        if script_name == "metric_check.py":
+            timeout = 600
         
         try:
             result = self.container.exec_run(
@@ -127,15 +126,11 @@ class DockerManager:
                 workdir="/workspace",
                 stdout=True,
                 stderr=True,
-                # 注意：docker-py的exec_run不直接支持timeout
-                # 这里我们依赖容器内部的脚本处理
             )
             
             output = result.output.decode("utf-8", errors="ignore")
             
-            # 检查是否因为超时或其他原因没有完成
-            if script_name == "evaluate.py" and result.exit_code == 0:
-                # 验证results.json是否存在且完整
+            if script_name == "metric_check.py" and result.exit_code == 0:
                 if not self.check_file_exists("/workspace/results.json"):
                     output += "\n⚠️ Script completed but results.json missing"
                     return 1, output
@@ -179,7 +174,7 @@ class DockerManager:
         return True
     
     def run_aider_fix(self, script_name: str, error_output: str) -> bool:
-        """使用Aider修复脚本"""
+        """Use Aider to fix script"""
         if not os.getenv("OPENAI_API_KEY"):
             print("⚠️ No OPENAI_API_KEY - cannot use Aider")
             return False
@@ -204,7 +199,7 @@ class DockerManager:
             return False
     
     def cleanup(self):
-        """清理容器资源"""
+        """Clean up container resources"""
         if self.container:
             try:
                 print("🧹 Cleaning up container...")
@@ -253,7 +248,7 @@ class DockerConfig:
     
     # 默认配置
     DEFAULT_IMAGE = "simple-coder:latest"
-    DEFAULT_MEMORY_LIMIT = "8g"
+    DEFAULT_MEMORY_LIMIT = "32g"
     
     # GPU配置
     GPU_ENABLED = True

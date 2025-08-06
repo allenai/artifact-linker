@@ -99,7 +99,6 @@ def main():
                 model_name=model,
                 dataset_name=dataset,
                 metric=metric,
-                max_runs=args.runs,
                 max_fixes=args.max_fixes,
             )
             success = result.get("success", False)

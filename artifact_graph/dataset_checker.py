@@ -1,116 +1,118 @@
 """
-数据集检查器 - 负责生成和执行数据集检查脚本
+Dataset checker - responsible for generating and executing dataset check scripts
 """
 
-import os
-
-from .base import ExperimentPhase, ExperimentPhaseHandler
-from .utils.llm import get_response_from_llm
+import re
+from .base import ExperimentPhase
 
 
-class DatasetCheckHandler(ExperimentPhaseHandler):
-    """数据集检查处理器"""
-
-    def __init__(self, coder, container, run_num: int, max_attempts: int):
-        super().__init__(coder, container, run_num, max_attempts)
-        self.phase_name = "DATASET CHECK"
-        self.script_name = "dataset_check.py"
-        self.expected_outputs = ["/workspace/dataset_analysis.json"]
-
-    def _generate_fix_prompt(self, error_output: str) -> str:
-        """生成数据集检查修复提示"""
-        return f"""
-Fix the dataset_check.py script. The error is:
-{error_output}
-
-Common issues and solutions:
-1. If datasets library fails - try pip install datasets
-2. If authentication fails - check HF_TOKEN environment variable
-3. If download fails - try smaller subset or different dataset split
-4. If memory issues - process data in smaller batches
-5. Always save results to dataset_analysis.json
-
-Please fix the script to handle these issues robustly.
-"""
-
-    def _get_phase_enum(self) -> ExperimentPhase:
-        return ExperimentPhase.DATASET_CHECK
 
 
 class DatasetCheckGenerator:
-    """数据集检查脚本生成器"""
-
+    """Dataset check script generator"""
+    
     def __init__(self, coder):
         self.coder = coder
+        self.client = coder.client
+    
+    def generate_script(self, dataset_name: str, dataset_readme: str = None) -> str:
+        """Generate dataset check script with README information"""
+        
+        # Format dataset README for inclusion in script
+        dataset_readme_section = ""
+        if dataset_readme:
+            # Clean and truncate README for inclusion
+            clean_readme = dataset_readme.replace('"""', "'''").replace('\\', '\\\\')[:2000]
+            dataset_readme_section = f'''
 
-    def generate_dataset_check(self, dataset_name: str) -> bool:
-        """生成数据集检查脚本"""
-        prompt = f"""
-Create a Python script to download and analyze the dataset: {dataset_name}
-
-The script should:
-1. Import necessary libraries (datasets, json, os, etc.)
-2. Download the dataset using datasets.load_dataset()
-3. Analyze basic properties:
-   - Number of samples in each split
-   - Column names and types
-   - Sample data examples (first 3-5 items)
-   - Data size information
-4. Handle authentication with HF_TOKEN if needed
-5. Save comprehensive analysis to dataset_analysis.json
-6. Include error handling for common issues:
-   - Network connectivity
-   - Authentication
-   - Memory constraints
-   - Dataset availability
-
-Key requirements:
-- Use robust error handling and fallbacks
-- Print progress information
-- Create dataset_analysis.json with complete information
-- Handle both public and gated datasets gracefully
-
-Return only the complete Python code for dataset_check.py.
+# Include dataset README information as documentation
+DATASET_README = """
+{clean_readme}
 """
+'''
+        
+        prompt = f"""
+Generate a simple dataset checking script for the HuggingFace dataset: {dataset_name}
 
+IMPORTANT: refer to the following dataset README section for the dataset information:
+{dataset_readme_section}
+
+Requirements:
+1. Load and verify the dataset can be accessed
+2. Get dataset splits information (train/test/validation sizes)
+3. Extract ONE actual example from each available split
+
+Save results to 'dataset_metadata.json' with this simplified structure:
+{{
+    "dataset_name": "{dataset_name}",
+    "status": "success/error", 
+    "splits": {{"train": 1000, "test": 100, "validation": 200}},
+    "sample_examples": [
+        {{
+            "split": "train",
+            "example": actual_data_example_from_train_split
+        }},
+        {{
+            "split": "test", 
+            "example": actual_data_example_from_test_split
+        }}
+    ],
+    "error": "error message if any"
+}}
+
+CRITICAL: Extract REAL examples from the dataset, not placeholder data.
+Handle authentication and download errors gracefully.
+
+Generate a complete Python script named 'dataset_check.py' that accomplishes these tasks.
+"""
+        
+        response = self.client.chat.completions.create(
+            model=self.coder.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        
+        script = response.choices[0].message.content
+        
+        # Extract code block if present
+        if "```python" in script:
+            script = script.split("```python")[1].split("```")[0]
+        elif "```" in script:
+            script = script.split("```")[1].split("```")[0]
+        
+        # If no code block found, return entire response
+        return script.strip()
+    
+    def get_stage(self) -> ExperimentPhase:
+        return ExperimentPhase.DATASET_CHECK
+    
+    def get_dataset_readme(self, dataset_name: str) -> str:
+        """Get dataset README information"""
         try:
-            print("🤖 Generating dataset_check.py...")
-            response, _ = get_response_from_llm(
-                msg=prompt,
-                client=self.coder.client,
-                model=self.coder.actual_model,
-                system_message="You are an expert data engineer. Generate a robust dataset download and analysis script that can be improved with Aider.",
-            )
-
-            code = self._extract_code(response)
-
-            file_path = os.path.join(self.coder.output_dir, "dataset_check.py")
-            with open(file_path, "w") as f:
-                f.write(code)
-
-            print(f"dataset_check.py generated ({len(code)} characters)")
-            return True
-
+            import requests
+            import json
+            
+            # Try to get dataset info via HuggingFace API
+            api_url = f"https://huggingface.co/api/datasets/{dataset_name}"
+            response = requests.get(api_url, timeout=10)
+            
+            if response.status_code == 200:
+                dataset_info = response.json()
+                return json.dumps(dataset_info, indent=2)
         except Exception as e:
-            print(f"Failed to generate dataset_check.py: {e}")
-            return False
+            print(f"API request failed: {e}")
+        
+        # If API fails, try to get README directly
+        try:
+            import requests
+            readme_url = f"https://huggingface.co/datasets/{dataset_name}/raw/main/README.md"
+            response = requests.get(readme_url, timeout=10)
+            
+            if response.status_code == 200:
+                return response.text[:2000]  # Limit length
+        except Exception as e:
+            print(f"README request failed: {e}")
+        
+        return f"Model: {dataset_name} (no additional info available)"
+    
 
-    def _extract_code(self, response: str) -> str:
-        """从响应中提取代码"""
-        # 查找代码块
-        patterns = [
-            r"```python\n(.*?)\n```",
-            r"```\n(.*?)\n```",
-            r"```python(.*?)```",
-            r"```(.*?)```",
-        ]
-
-        import re
-
-        for pattern in patterns:
-            match = re.search(pattern, response, re.DOTALL)
-            if match:
-                return match.group(1).strip()
-
-        # 如果没找到代码块，返回整个响应
-        return response.strip()
