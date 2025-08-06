@@ -163,16 +163,62 @@ Based on the metadata above, the script should:
    - Memory management: {model_metadata.get('memory_usage', 'optimize automatically')}
    - Device placement: {model_metadata.get('device_recommendation', 'auto')}
 
-6. Save comprehensive results to results.json:
+6. Save comprehensive results to results.json with robust writing:
    - Include the calculated {metric}: value and confidence interval
    - Add processing statistics and performance metrics
    - Include model and dataset metadata used
    - Add any relevant error analysis
+   - CRITICAL: Use proper JSON writing with error handling:
+     ```python
+     import json
+
+     results = {{
+         "{metric}": calculated_metric_value,
+         "confidence_interval": confidence_interval,
+         "model_name": "{model_name}",
+         "dataset_name": "{dataset_name}",
+         "total_samples": total_samples,
+         "correct_predictions": correct_predictions,
+         "error_analysis": error_analysis_dict,
+         "processing_time": processing_time,
+         "device_used": device_used
+     }}
+
+     # Write JSON with atomic operation and validation
+     import tempfile
+     import os
+     import shutil
+
+     # Write to temporary file first
+     temp_path = "/workspace/results_temp.json"
+     final_path = "/workspace/results.json"
+
+     try:
+         with open(temp_path, 'w', encoding='utf-8') as f:
+             json.dump(results, f, indent=2, ensure_ascii=False)
+             f.flush()
+             os.fsync(f.fileno())  # Force write to disk
+
+         # Verify the temp file is valid JSON
+         with open(temp_path, 'r', encoding='utf-8') as f:
+             json.load(f)  # Validate JSON
+
+         # Atomically move to final location
+         shutil.move(temp_path, final_path)
+         print(f"✅ Results saved to {{final_path}}")
+
+     except Exception as e:
+         print(f"❌ Error saving results: {{e}}")
+         # Fallback: simple write
+         with open(final_path, 'w', encoding='utf-8') as f:
+             json.dump(results, f, indent=2)
+     ```
 
 7. Robust error handling:
    - Graceful fallbacks for device/memory issues
    - Data type conversion and format handling
    - Clear progress reporting and error messages
+   - Ensure all file operations complete successfully
 
 The script should be optimized for the specific model-dataset combination based on the metadata analysis.
 

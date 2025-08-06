@@ -5,12 +5,12 @@
 import os
 from typing import Dict
 
-import docker
-import docker.types
-
-from .dataset_checker import DatasetCheckGenerator, DatasetCheckHandler
-from .evaluator import EvaluationGenerator, EvaluationHandler
-from .model_checker import ModelCheckGenerator, ModelCheckHandler
+from .dataset_checker import DatasetCheckGenerator
+from .dependency_parser import DependencyParser
+from .docker_manager import DockerManager
+from .evaluator import EvaluationGenerator
+from .json_fixer import JSONFixer
+from .model_checker import ModelCheckGenerator
 from .utils.llm import create_client
 
 
@@ -18,13 +18,22 @@ class DockerCoder:
     """重构后的Docker代码生成器，使用分离的组件"""
 
     def __init__(
-        self, model: str = "gpt-4o-mini", output_dir: str = "results", memory_limit: str = "8g"
+        self,
+        model: str = "gpt-4o-mini",
+        output_dir: str = "results",
+        memory_limit: str = "8g",
+        enable_gpu: bool = True,
     ):
         self.model = model
         self.output_dir = output_dir
         self.memory_limit = memory_limit
-        # create_client returns (client, model) tuple
+        self.enable_gpu = enable_gpu
+
+        # 初始化LLM客户端
         self.client, self.actual_model = create_client(model)
+
+        # 初始化Docker管理器
+        self.docker_manager = DockerManager(memory_limit=memory_limit, enable_gpu=enable_gpu)
 
         # 初始化各组件
         self.dataset_generator = DatasetCheckGenerator(self)
@@ -53,27 +62,19 @@ class DockerCoder:
         print(f"Memory Limit: {self.memory_limit}")
 
         try:
-            print(f"\n{'='*60}")
-            print(" CONTAINER SETUP")
-            print(f"{'='*60}")
+            print("\n\nCONTAINER SETUP")
 
-            print("Creating Docker container...")
-            container = self._create_container()
-
+            # 创建Docker容器
+            container = self.docker_manager.create_container(self.output_dir)
             if not container:
                 print("❌ Failed to create Docker container")
                 return {}
-            print("✅ Docker container created")
 
             if self.client is None:
                 print("❌ No LLM client available")
-                container.stop()
-                container.remove()
+                self.docker_manager.cleanup()
                 return {}
             print("✅ LLM client ready")
-
-            # 预安装包
-            self._preinstall_missing_packages(container)
 
             os.makedirs(self.output_dir, exist_ok=True)
 
@@ -98,9 +99,7 @@ class DockerCoder:
                 else:
                     print(f"❌ Run {run + 1} failed")
 
-            container.stop()
-            container.remove()
-            print("🧹 Container cleaned up")
+            self.docker_manager.cleanup()
 
             success_rate = successful_runs / total_runs if total_runs > 0 else 0
 
@@ -115,9 +114,7 @@ class DockerCoder:
                 "output_dir": self.output_dir,
             }
 
-            print(f"\n{'='*60}")
-            print(" FINAL RESULTS")
-            print(f"{'='*60}")
+            print("\n\nFINAL RESULTS")
             print(f"Successful runs: {successful_runs}/{total_runs}")
             print(f"Success rate: {success_rate:.1%}")
 
@@ -172,13 +169,14 @@ class DockerCoder:
         """顺序执行实验：先获取元信息，再生成评估脚本"""
 
         # 阶段1: 生成并运行 dataset checker，获取数据集元信息
-        print(f"\n{'='*60}")
-        print(" PHASE 1: DATASET ANALYSIS")
-        print(f"{'='*60}")
+        print("\n\nPHASE 1: DATASET ANALYSIS")
 
         if not self.dataset_generator.generate_dataset_check(dataset_name):
             print("❌ Failed to generate dataset_check.py")
             return False
+
+        # 解析并安装脚本依赖
+        self._install_script_dependencies("dataset_check.py")
 
         # 运行 dataset checker 获取元信息
         dataset_metadata = self._run_and_get_metadata(
@@ -189,32 +187,35 @@ class DockerCoder:
             return False
 
         # 阶段2: 生成并运行 model checker，获取模型元信息
-        print(f"\n{'='*60}")
-        print(" PHASE 2: MODEL ANALYSIS")
-        print(f"{'='*60}")
+        print("\n\nPHASE 2: MODEL ANALYSIS")
 
         if not self.model_generator.generate_model_check(model_name, model_readme):
             print("❌ Failed to generate model_check.py")
             return False
 
+        # 解析并安装脚本依赖
+        self._install_script_dependencies("model_check.py")
+
         # 运行 model checker 获取元信息
         model_metadata = self._run_and_get_metadata(
             container, "model_check.py", "model_analysis.json", max_fixes
         )
+        print(f"🔍 Model metadata result: {type(model_metadata)} - {model_metadata}")  # 调试信息
         if not model_metadata:
-            print("❌ Failed to get model metadata")
+            print("❌ Failed to get model metadata - returned empty or None")
             return False
 
         # 阶段3: 基于元信息生成并运行评估脚本
-        print(f"\n{'='*60}")
-        print(" PHASE 3: EVALUATION (with metadata)")
-        print(f"{'='*60}")
+        print("\n\nPHASE 3: EVALUATION (with metadata)")
 
         if not self.evaluation_generator.generate_evaluate_script_with_metadata(
             model_name, dataset_name, metric, model_readme, model_metadata, dataset_metadata
         ):
             print("❌ Failed to generate evaluate.py with metadata")
             return False
+
+        # 解析并安装脚本依赖
+        self._install_script_dependencies("evaluate.py")
 
         # 运行最终评估
         return self._run_final_evaluation(container, max_fixes)
@@ -229,35 +230,65 @@ class DockerCoder:
 
         for attempt in range(max_fixes + 1):
             try:
+                print(f"🔄 Attempt {attempt + 1}/{max_fixes + 1}: Running {script_name}...")
+
                 # 运行脚本
-                result = container.exec_run(
-                    f"python /workspace/{script_name}", workdir="/workspace"
-                )
-                output = result.output.decode("utf-8", errors="ignore")
+                exit_code, output = self.docker_manager.execute_script(script_name)
                 print(f"Script output: {output[:500]}...")
 
-                if result.exit_code == 0:
-                    # 尝试读取元数据文件
-                    metadata_result = container.exec_run(f"cat /workspace/{output_file}")
-                    if metadata_result.exit_code == 0:
+                # 首先尝试读取元数据文件（即使脚本失败，也可能生成了有用的元数据）
+                metadata_exit_code, metadata_content = self.docker_manager.read_file(
+                    f"/workspace/{output_file}"
+                )
+                if metadata_exit_code == 0:
+                    try:
                         import json
 
-                        metadata = json.loads(metadata_result.output.decode("utf-8"))
+                        metadata = json.loads(metadata_content)
                         print(f"✅ Retrieved metadata from {output_file}")
-                        return metadata
-                    else:
-                        print(f"❌ Metadata file {output_file} not found")
+                        print(f"📊 Metadata content: {metadata}")  # 调试信息
+                        # 即使脚本exit_code != 0，如果有有效元数据就返回
+                        if exit_code != 0:
+                            print(
+                                f"⚠️ Script had exit code {exit_code} but produced valid metadata"
+                            )
+                        # 确保返回的不是空字典
+                        if metadata:
+                            return metadata
+                        else:
+                            print(f"⚠️ Metadata file {output_file} is empty or null")
+                            output += f"\nEmpty metadata in {output_file}"
+                    except json.JSONDecodeError as e:
+                        print(f"❌ Invalid JSON in {output_file}: {e}")
+                        output += f"\nJSON decode error: {e}"
+                else:
+                    print(f"❌ Metadata file {output_file} not found")
+                    output += f"\nMissing output file: {output_file}"
+
+                # 如果没有有效元数据且脚本失败，记录错误
+                if exit_code != 0:
+                    print(f"❌ Script failed with exit code {exit_code}")
+                    output += f"\nScript exit code: {exit_code}"
 
                 # 如果失败且还有尝试次数，使用Aider修复
-                if attempt < max_fixes and os.getenv("OPENAI_API_KEY"):
+                if attempt < max_fixes:
                     print(f"🔧 Attempt {attempt + 1}: Using Aider to fix {script_name}...")
-                    aider_cmd = f"""cd /workspace && echo "Fix the error in {script_name}. Error: {output}" | aider --no-git --yes {script_name}"""
-                    container.exec_run(["bash", "-c", aider_cmd], workdir="/workspace")
+                    if self.docker_manager.run_aider_fix(script_name, output):
+                        print("✅ Aider fix completed, retrying...")
+                        continue
+                    else:
+                        print("❌ Aider fix failed, stopping retries")
+                        break
                 else:
+                    print("💀 Maximum attempts reached")
                     break
 
             except Exception as e:
                 print(f"❌ Error running {script_name}: {e}")
+                if attempt < max_fixes:
+                    print("🔧 Attempting Aider fix for exception...")
+                    self.docker_manager.run_aider_fix(script_name, str(e))
+                    continue
                 break
 
         return {}
@@ -269,30 +300,87 @@ class DockerCoder:
 
         for attempt in range(max_fixes + 1):
             try:
+                print(f"🔄 Attempt {attempt + 1}/{max_fixes + 1}: Running evaluate.py...")
+
                 # 运行评估脚本
-                result = container.exec_run("python /workspace/evaluate.py", workdir="/workspace")
-                output = result.output.decode("utf-8", errors="ignore")
+                exit_code, output = self.docker_manager.execute_script("evaluate.py")
                 print(f"Evaluation output: {output[:500]}...")
 
-                if result.exit_code == 0:
+                if exit_code == 0:
                     # 检查结果文件是否存在
-                    results_check = container.exec_run("ls -la /workspace/results.json")
-                    if results_check.exit_code == 0:
-                        print("✅ Evaluation completed successfully")
-                        return True
+                    if self.docker_manager.check_file_exists("/workspace/results.json"):
+                        # 验证JSON文件完整性
+                        json_exit_code, json_content = self.docker_manager.read_file(
+                            "/workspace/results.json"
+                        )
+                        if json_exit_code == 0:
+                            try:
+                                import json
+
+                                json_data = json.loads(json_content)
+                                print(
+                                    f"✅ Evaluation completed successfully - JSON size: {len(json_content)} chars"
+                                )
+                                print(f"📊 Results keys: {list(json_data.keys())}")
+                                return True
+                            except json.JSONDecodeError as e:
+                                print(f"❌ Invalid JSON in results.json: {e}")
+                                print(f"🔍 JSON content preview: {json_content[:200]}...")
+
+                                # 尝试修复损坏的JSON
+                                print("🔧 Attempting to fix corrupted JSON...")
+                                fixed_json = JSONFixer.fix_truncated_json(json_content)
+
+                                if fixed_json:
+                                    print("✅ JSON successfully repaired!")
+                                    print(f"📊 Repaired results keys: {list(fixed_json.keys())}")
+
+                                    # 将修复后的JSON写回文件
+                                    try:
+                                        import json as json_module
+
+                                        fixed_content = json_module.dumps(fixed_json, indent=2)
+
+                                        # 通过Docker执行写入命令
+                                        write_cmd = f"python3 -c \"import json; data={repr(fixed_json)}; f=open('/workspace/results.json', 'w'); json.dump(data, f, indent=2); f.close(); print('JSON repaired and saved')\""
+                                        self.docker_manager.execute_command(write_cmd)
+
+                                        print("💾 Repaired JSON saved back to results.json")
+                                        return True
+                                    except Exception as write_error:
+                                        print(f"⚠️ Could not write repaired JSON: {write_error}")
+                                        output += f"\nJSON repaired but write failed: {write_error}"
+                                else:
+                                    print("❌ JSON repair failed")
+                                    output += f"\nCorrupted JSON file: {e}"
+                        else:
+                            print("❌ Cannot read results.json content")
+                            output += "\nCannot read results.json file"
                     else:
                         print("❌ Results file not generated")
+                        output += "\nMissing results.json file"
+                else:
+                    print(f"❌ Evaluation failed with exit code {exit_code}")
 
                 # 如果失败且还有尝试次数，使用Aider修复
-                if attempt < max_fixes and os.getenv("OPENAI_API_KEY"):
+                if attempt < max_fixes:
                     print(f"🔧 Attempt {attempt + 1}: Using Aider to fix evaluate.py...")
-                    aider_cmd = f"""cd /workspace && echo "Fix the error in evaluate.py. Error: {output}" | aider --no-git --yes evaluate.py"""
-                    container.exec_run(["bash", "-c", aider_cmd], workdir="/workspace")
+                    if self.docker_manager.run_aider_fix("evaluate.py", output):
+                        print("✅ Aider fix completed, retrying...")
+                        continue
+                    else:
+                        print("❌ Aider fix failed, stopping retries")
+                        break
                 else:
+                    print("💀 Maximum attempts reached")
                     break
 
             except Exception as e:
                 print(f"❌ Error running evaluation: {e}")
+                if attempt < max_fixes:
+                    print("🔧 Attempting Aider fix for exception...")
+                    self.docker_manager.run_aider_fix("evaluate.py", str(e))
+                    continue
                 break
 
         print("❌ Final evaluation failed")
@@ -321,56 +409,24 @@ class DockerCoder:
         print("\n✅ All phases completed successfully!")
         return True
 
-    def _create_container(self):
-        """创建Docker容器"""
-        try:
-            # 先创建输出目录，确保是当前用户权限
-            os.makedirs(self.output_dir, exist_ok=True)
+    def _install_script_dependencies(self, script_name: str) -> bool:
+        """解析脚本并安装其依赖"""
+        script_path = os.path.join(self.output_dir, script_name)
 
-            docker_client = docker.from_env()
+        if not os.path.exists(script_path):
+            print(f"⚠️ Script {script_name} not found, skipping dependency installation")
+            return False
 
-            container = docker_client.containers.run(
-                "simple-coder:latest",
-                command="sleep infinity",
-                detach=True,
-                remove=False,
-                working_dir="/workspace",
-                volumes={os.path.abspath(self.output_dir): {"bind": "/workspace", "mode": "rw"}},
-                mem_limit=self.memory_limit,
-                # Enable GPU support
-                device_requests=[
-                    docker.types.DeviceRequest(device_ids=["all"], capabilities=[["gpu"]])
-                ],
-                environment={
-                    "PYTHONPATH": "/workspace",
-                    "HF_TOKEN": os.getenv("HF_TOKEN", ""),
-                    "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
-                    "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
-                    "CUDA_VISIBLE_DEVICES": "all",
-                },
-            )
+        print(f"🔍 Analyzing dependencies for {script_name}...")
+        dependencies = DependencyParser.parse_script(script_path)
 
-            return container
-
-        except Exception as e:
-            print(f"Failed to create container: {e}")
-            return None
-
-    def _preinstall_missing_packages(self, container) -> None:
-        """预安装可能缺失的包"""
-        packages = ["evaluate", "scikit-learn", "scipy", "accelerate"]
-
-        print(f"📦 Installing packages: {', '.join(packages)}")
-
-        for package in packages:
-            try:
-                result = container.exec_run(f"pip install {package}", workdir="/workspace")
-                if result.exit_code == 0:
-                    print(f"✅ {package} installed")
-                else:
-                    print(f"⚠️  {package} installation failed (might already exist)")
-            except Exception as e:
-                print(f"⚠️  Failed to install {package}: {e}")
+        if dependencies:
+            print(f"📦 Found {len(dependencies)} dependencies: {', '.join(dependencies)}")
+            self.docker_manager.install_packages(dependencies)
+            return True
+        else:
+            print(f"📦 No external dependencies found for {script_name}")
+            return True
 
     def _check_results_exist(self, run_num: int) -> bool:
         """检查结果文件是否已存在"""
