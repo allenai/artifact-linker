@@ -55,7 +55,7 @@ class DockerManager:
             # 添加GPU支持（如果启用）
             if self.enable_gpu:
                 container_config["device_requests"] = [
-                    docker.types.DeviceRequest(device_ids=["all"], capabilities=[["gpu"]])
+                    docker.types.DeviceRequest(count=-1, capabilities=[['gpu']])
                 ]
             
             # 创建并启动容器
@@ -71,7 +71,6 @@ class DockerManager:
     
     def _prepare_environment_vars(self, custom_vars: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """准备环境变量"""
-        # 默认环境变量
         default_vars = {
             "PYTHONPATH": "/workspace",
             "HF_TOKEN": os.getenv("HF_TOKEN", ""),
@@ -79,11 +78,6 @@ class DockerManager:
             "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
         }
         
-        # 添加GPU相关环境变量
-        if self.enable_gpu:
-            default_vars["CUDA_VISIBLE_DEVICES"] = "all"
-        
-        # 合并自定义环境变量
         if custom_vars:
             default_vars.update(custom_vars)
         
@@ -182,7 +176,7 @@ class DockerManager:
         try:
             print(f"🔧 Using Aider to fix {script_name}...")
             
-            fix_prompt = f"Fix the error in {script_name}. Error: {error_output}"
+            fix_prompt = f"Fix the error in {script_name}. Error after running this script: {error_output}"
             aider_cmd = f"""cd /workspace && echo "{fix_prompt}" | aider --no-git --yes {script_name}"""
             
             exit_code, output = self.execute_command(["bash", "-c", aider_cmd])

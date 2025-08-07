@@ -57,7 +57,7 @@ def main():
         help="Output directory for results (default: simple_results)",
     )
     parser.add_argument(
-        "--memory-limit", default="8g", help="Docker container memory limit (default: 8g)"
+        "--memory-limit", default="32g", help="Docker container memory limit (default: 8g)"
     )
     args = parser.parse_args()
 

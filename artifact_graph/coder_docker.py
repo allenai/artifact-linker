@@ -174,11 +174,53 @@ class DockerCoder:
     ) -> bool:
         """Execute experiment sequentially: get metadata first, then generate evaluation script"""
 
+        # Phase 1: Dataset Analysis
         print("\n\nPHASE 1: DATASET ANALYSIS")
+        dataset_metadata = self._get_or_generate_metadata(
+            "dataset_metadata.json",
+            lambda: self._generate_dataset_metadata(dataset_name, container, max_fixes)
+        )
+        if not dataset_metadata:
+            return False
 
-        # Get dataset README
+        # Phase 2: Model Analysis
+        print("\n\nPHASE 2: MODEL ANALYSIS")
+        model_metadata = self._get_or_generate_metadata(
+            "model_metadata.json",
+            lambda: self._generate_model_metadata(model_name, dataset_name, dataset_metadata, model_readme, container, max_fixes)
+        )
+        if not model_metadata:
+            return False
+
+        print("\n\nPHASE 3: EVALUATION (with metadata)")
+        if self._check_existing_results():
+            return True  # Results already exist, skip evaluation
+
+        return self._run_evaluation(model_name, dataset_name, metric, model_readme, model_metadata, dataset_metadata, container, max_fixes)
+
+    def _get_or_generate_metadata(self, filename: str, generator_func) -> dict:
+        """Load existing metadata or generate new one using provided function"""
+        metadata_path = os.path.join(self.output_dir, filename)
+        
+        if os.path.exists(metadata_path):
+            print(f"✅ {filename} already exists, loading from file...")
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                name_key = 'dataset_name' if 'dataset' in filename else 'model_name'
+                print(f"📂 Loaded existing metadata: {metadata.get(name_key, 'unknown')}")
+                return metadata
+            except Exception as e:
+                print(f"❌ Failed to load existing {filename}: {e}")
+                return {}
+        else:
+            print(f"🔄 Generating {filename}...")
+            return generator_func()
+
+    def _generate_dataset_metadata(self, dataset_name: str, container, max_fixes: int) -> dict:
+        """Generate dataset metadata"""
         dataset_readme = self.dataset_generator.get_dataset_readme(dataset_name)
-
+        
         try:
             script_content = self.dataset_generator.generate_script(dataset_name, dataset_readme)
             script_path = os.path.join(self.output_dir, "dataset_check.py")
@@ -187,19 +229,17 @@ class DockerCoder:
             print("✅ Generated dataset_check.py with README")
         except Exception as e:
             print(f"❌ Failed to generate dataset_check.py: {e}")
-            return False
+            return {}
 
         self._install_script_dependencies("dataset_check.py")
-
-        dataset_metadata = self._run_and_get_metadata(
-            container, "dataset_check.py", "dataset_metadata.json", max_fixes
-        )
-        if not dataset_metadata:
+        
+        metadata = self._run_and_get_metadata(container, "dataset_check.py", "dataset_metadata.json", max_fixes)
+        if not metadata:
             print("❌ Failed to get dataset metadata")
-            return False
+        return metadata
 
-        print("\n\nPHASE 2: MODEL ANALYSIS")
-
+    def _generate_model_metadata(self, model_name: str, dataset_name: str, dataset_metadata: dict, model_readme: str, container, max_fixes: int) -> dict:
+        """Generate model metadata"""
         try:
             script_content = self.model_generator.generate_script(model_name, dataset_name, dataset_metadata, model_readme)
             script_path = os.path.join(self.output_dir, "model_check.py")
@@ -208,20 +248,33 @@ class DockerCoder:
             print("✅ Generated model_check.py with README and dataset context")
         except Exception as e:
             print(f"❌ Failed to generate model_check.py: {e}")
-            return False
+            return {}
 
         self._install_script_dependencies("model_check.py")
+        
+        metadata = self._run_and_get_metadata(container, "model_check.py", "model_metadata.json", max_fixes)
+        if not metadata:
+            print("❌ Failed to get model metadata")
+        return metadata
 
-        model_metadata = self._run_and_get_metadata(
-            container, "model_check.py", "model_metadata.json", max_fixes
-        )
-        print(f"🔍 Model metadata result: {type(model_metadata)} - {model_metadata}")  # 调试信息
-        if not model_metadata:
-            print("❌ Failed to get model metadata - returned empty or None")
-            return False
+    def _check_existing_results(self) -> bool:
+        """Check if evaluation results already exist"""
+        results_path = os.path.join(self.output_dir, "final_info.json")
+        if os.path.exists(results_path):
+            print("✅ Evaluation results already exist, skipping evaluation...")
+            try:
+                with open(results_path, 'r') as f:
+                    results = json.load(f)
+                print(f"📊 Loaded existing results: {results.get('accuracy', 'N/A')} accuracy")
+                return True
+            except Exception as e:
+                print(f"❌ Failed to load existing results: {e}")
+        return False
 
-        print("\n\nPHASE 3: EVALUATION (with metadata)")
-
+    def _run_evaluation(self, model_name: str, dataset_name: str, metric: str, model_readme: str, model_metadata: dict, dataset_metadata: dict, container, max_fixes: int) -> bool:
+        """Generate and run evaluation script"""
+        print("🔄 Generating evaluation script...")
+        
         if not self.evaluation_generator.generate_evaluate_script_with_metadata(
             model_name, dataset_name, metric, model_readme, model_metadata, dataset_metadata
         ):
@@ -229,7 +282,6 @@ class DockerCoder:
             return False
 
         self._install_script_dependencies("metric_check.py")
-
         return self._run_final_evaluation(container, max_fixes)
 
     def _run_and_get_metadata(self, container, script_name: str, output_file: str, max_fixes: int) -> dict:

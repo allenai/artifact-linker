@@ -59,20 +59,16 @@ Requirements:
 2. Run model inference on the provided dataset examples (any output is fine)
 3. Ensure the code executes without errors
 
-Save results to 'model_metadata.json' with this simplified structure:
+ONLY save results to 'model_metadata.json' if the model runs successfully. Use this structure:
 {{
     "model_name": "{model_name}",
-    "status": "success/error",
-    "runnable": "yes/no", 
-    "error": "error message if any"
+    "runnable": "yes"
 }}
 
 Focus on making the code runnable, not on correctness of results.
-Handle common issues gracefully:
-- Missing model files
-- Authentication requirements  
-- Model loading errors
-- Runtime exceptions
+If ANY error occurs (missing model files, authentication issues, loading errors, runtime exceptions), 
+DO NOT save the metadata.json file - just let the script exit with an error.
+The metadata.json should ONLY exist when everything works successfully.
 
 Generate a complete Python script named 'model_check.py' that accomplishes these tasks.
 """

@@ -1,5 +1,5 @@
-# Use Ubuntu base and manually install CUDA
-FROM ubuntu:20.04
+# Use NVIDIA CUDA runtime base image with Python
+FROM nvidia/cuda:11.8-runtime-ubuntu20.04
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -13,34 +13,17 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     build-essential \
-    software-properties-common \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install NVIDIA CUDA keyring and repository
-RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb \
-    && dpkg -i cuda-keyring_1.0-1_all.deb \
-    && apt-get update \
-    && apt-get install -y cuda-toolkit-12-4 \
     && rm -rf /var/lib/apt/lists/* \
-    && rm cuda-keyring_1.0-1_all.deb
+    && ln -s /usr/bin/python3 /usr/bin/python
 
-# Set CUDA environment variables
-ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}
-ENV CUDA_HOME=/usr/local/cuda
+# Set environment variables for GPU access
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Create symbolic link for python
-RUN ln -s /usr/bin/python3 /usr/bin/python
-
-# Install core ML packages with CUDA support
+# Install core ML packages with CUDA support (use latest stable versions)
 RUN pip install --no-cache-dir \
-    torch==2.1.2+cu121 \
-    torchvision==0.16.2+cu121 \
+    torch \
+    torchvision \
     --index-url https://download.pytorch.org/whl/cu121 \
     numpy==1.26.4
 

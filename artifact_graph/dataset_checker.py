@@ -42,10 +42,9 @@ Requirements:
 2. Get dataset splits information (train/test/validation sizes)
 3. Extract ONE actual example from each available split
 
-Save results to 'dataset_metadata.json' with this simplified structure:
+ONLY save results to 'dataset_metadata.json' if dataset access is successful. Use this structure:
 {{
     "dataset_name": "{dataset_name}",
-    "status": "success/error", 
     "splits": {{"train": 1000, "test": 100, "validation": 200}},
     "sample_examples": [
         {{
@@ -56,12 +55,13 @@ Save results to 'dataset_metadata.json' with this simplified structure:
             "split": "test", 
             "example": actual_data_example_from_test_split
         }}
-    ],
-    "error": "error message if any"
+    ]
 }}
 
 CRITICAL: Extract REAL examples from the dataset, not placeholder data.
-Handle authentication and download errors gracefully.
+If ANY error occurs (authentication failures, download errors, dataset access issues), 
+DO NOT save the metadata.json file - just let the script exit with an error.
+The metadata.json should ONLY exist when everything works successfully.
 
 Generate a complete Python script named 'dataset_check.py' that accomplishes these tasks.
 """
