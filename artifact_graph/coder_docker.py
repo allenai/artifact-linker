@@ -259,16 +259,24 @@ class DockerCoder:
 
     def _check_existing_results(self) -> bool:
         """Check if evaluation results already exist"""
-        results_path = os.path.join(self.output_dir, "final_info.json")
-        if os.path.exists(results_path):
-            print("✅ Evaluation results already exist, skipping evaluation...")
+        results_json_path = os.path.join(self.output_dir, "results.json")
+        
+        if os.path.exists(results_json_path):
+            print("✅ Evaluation results (results.json) already exist, skipping evaluation...")
             try:
-                with open(results_path, 'r') as f:
+                with open(results_json_path, 'r') as f:
                     results = json.load(f)
-                print(f"📊 Loaded existing results: {results.get('accuracy', 'N/A')} accuracy")
+                # Try to find the metric value (could be accuracy, f1, etc.)
+                metric_value = None
+                for key, value in results.items():
+                    if isinstance(value, (int, float)) and key != 'total_samples' and key != 'processing_time':
+                        metric_value = value
+                        break
+                print(f"📊 Loaded existing results: {metric_value if metric_value is not None else 'N/A'}")
                 return True
             except Exception as e:
-                print(f"❌ Failed to load existing results: {e}")
+                print(f"❌ Failed to load existing results.json: {e}")
+        
         return False
 
     def _run_evaluation(self, model_name: str, dataset_name: str, metric: str, model_readme: str, model_metadata: dict, dataset_metadata: dict, container, max_fixes: int) -> bool:
