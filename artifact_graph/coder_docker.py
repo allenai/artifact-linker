@@ -98,7 +98,7 @@ class DockerCoder:
             print(f"{'='*80}")
             
             # Read and display the result.json content
-            result_file = os.path.join(self.output_dir, "run_1", "final_info.json")
+            result_file = os.path.join(self.output_dir, "results.json")
             experiment_results = {}
             
             if run_success and os.path.exists(result_file):

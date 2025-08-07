@@ -47,7 +47,7 @@ def main():
     )
     parser.add_argument("--llm-model", default="gpt-4o")
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--max-fixes", type=int, default=15)
+    parser.add_argument("--max-fixes", type=int, default=5)
     parser.add_argument(
         "--limit", type=int, default=30, help="Evaluate only first N triples (0 = all)"
     )
@@ -77,9 +77,9 @@ def main():
 
     print(f"Starting evaluation of {len(triples)} triples...\n")
     for i, (model, dataset, metric) in enumerate(triples, 1):
-        print("=" * 50)
+        print("=" * 80)
         print(f"[{i}/{len(triples)}] {model} | {dataset} | {metric}")
-        print("=" * 50)
+        print("=" * 80)
         # Create a safe directory name by replacing invalid characters
         safe_dir = f"{model}_{dataset}_{metric}"
         # Replace all invalid characters for Docker volume names
