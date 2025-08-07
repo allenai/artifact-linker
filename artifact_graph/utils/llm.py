@@ -21,7 +21,7 @@ if os.path.exists(config_path):
 else:
     config = {"core": {}}
 
-MAX_NUM_TOKENS = 4096
+MAX_NUM_TOKENS = 8192
 
 AVAILABLE_LLMS = [
     # Anthropic models

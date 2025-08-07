@@ -3,7 +3,7 @@
 Batch‑evaluate all model/dataset/metric triples from perfect_model_dataset_metrics.json
 
 Usage:
-    python hf_eval_all.py --llm-model gpt-4o --runs 1 --max-fixes 5 --limit 20 --output-dir results --memory-limit 8g
+    python hf_auto_eval.py --llm-model gpt-4o --runs 1 --dataset-max-fixes 3 --model-max-fixes 3 --metric-max-fixes 10 --limit 20 --output-dir results --memory-limit 8g
 """
 
 import argparse
@@ -47,9 +47,17 @@ def main():
     )
     parser.add_argument("--llm-model", default="gpt-4o")
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--max-fixes", type=int, default=5)
     parser.add_argument(
-        "--limit", type=int, default=30, help="Evaluate only first N triples (0 = all)"
+        "--dataset-max-fixes", type=int, default=3, help="Maximum fixes for dataset processing"
+    )
+    parser.add_argument(
+        "--model-max-fixes", type=int, default=3, help="Maximum fixes for model processing"
+    )
+    parser.add_argument(
+        "--metric-max-fixes", type=int, default=10, help="Maximum fixes for metric evaluation"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=100, help="Evaluate only first N triples (0 = all)"
     )
     parser.add_argument(
         "--output-dir",
@@ -59,12 +67,21 @@ def main():
     parser.add_argument(
         "--memory-limit", default="32g", help="Docker container memory limit (default: 8g)"
     )
+    parser.add_argument("--start-index", type=int, default=0, help="Start index for evaluation")
+    parser.add_argument("--dataset-name", default="mnli", help="Dataset name to filter")
     args = parser.parse_args()
 
     combos = load_combinations(Path(args.json_file))
     triples = list(iter_triples(combos))
-    if args.limit and args.limit > 0:
-        triples = triples[: args.limit]
+    # if args.limit and args.limit > 0:
+    #    triples = triples[args.start_index: args.start_index + args.limit]
+
+    filtered_triples = []
+    for triple in triples:
+        if args.dataset_name in triple[1]:
+            filtered_triples.append(triple)
+
+    triples = filtered_triples
 
     if not triples:
         print("No evaluable triples found.")
@@ -99,7 +116,9 @@ def main():
                 model_name=model,
                 dataset_name=dataset,
                 metric=metric,
-                max_fixes=args.max_fixes,
+                dataset_max_fixes=args.dataset_max_fixes,
+                model_max_fixes=args.model_max_fixes,
+                metric_max_fixes=args.metric_max_fixes,
             )
             success = result.get("success", False)
             if success:

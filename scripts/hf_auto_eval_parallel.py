@@ -14,9 +14,9 @@ import time
 from multiprocessing import Pool
 from pathlib import Path
 
-# Allow importing tiny_scientist
+# Allow importing artifact_graph
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from tiny_scientist.coder_docker import DockerCoder
+from artifact_graph.coder_docker import DockerCoder
 
 
 def load_combinations(json_path: Path):
@@ -46,7 +46,17 @@ def evaluate_single_triple(args_tuple):
     """
     Worker function to evaluate a single (model, dataset, metric) triple
     """
-    model, dataset, metric, llm_model, runs, max_fixes, worker_id = args_tuple
+    (
+        model,
+        dataset,
+        metric,
+        llm_model,
+        runs,
+        dataset_max_fixes,
+        model_max_fixes,
+        metric_max_fixes,
+        worker_id,
+    ) = args_tuple
 
     print(f"🔄 [Worker {worker_id}] Starting: {model} | {dataset} | {metric}")
 
@@ -56,11 +66,13 @@ def evaluate_single_triple(args_tuple):
     try:
         # Create DockerCoder instance for this evaluation
         coder = DockerCoder(model=llm_model, output_dir=out_dir)
-        success, message = coder.evaluate_model(
+        success, message = coder.evaluate(
             model_name=model,
             dataset_name=dataset,
             metric=metric,
-            max_fixes=max_fixes,
+            dataset_max_fixes=dataset_max_fixes,
+            model_max_fixes=model_max_fixes,
+            metric_max_fixes=metric_max_fixes,
         )
 
         status = "✅" if success else "❌"
@@ -96,7 +108,15 @@ def main():
     )
     parser.add_argument("--llm-model", default="gpt-4o")
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--max-fixes", type=int, default=3)
+    parser.add_argument(
+        "--dataset-max-fixes", type=int, default=3, help="Maximum fixes for dataset processing"
+    )
+    parser.add_argument(
+        "--model-max-fixes", type=int, default=3, help="Maximum fixes for model processing"
+    )
+    parser.add_argument(
+        "--metric-max-fixes", type=int, default=10, help="Maximum fixes for metric evaluation"
+    )
     parser.add_argument(
         "--limit", type=int, default=1000, help="Evaluate only first N triples (0 = all)"
     )
@@ -123,7 +143,17 @@ def main():
     for i, (model, dataset, metric) in enumerate(triples):
         worker_id = i % args.workers + 1
         worker_args.append(
-            (model, dataset, metric, args.llm_model, args.runs, args.max_fixes, worker_id)
+            (
+                model,
+                dataset,
+                metric,
+                args.llm_model,
+                args.runs,
+                args.dataset_max_fixes,
+                args.model_max_fixes,
+                args.metric_max_fixes,
+                worker_id,
+            )
         )
 
     start_time = time.time()

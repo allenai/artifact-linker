@@ -169,7 +169,8 @@ class ExperimentPhaseHandler:
                 result = self.container.exec_run(f"ls {expected_file}")
                 if result.exit_code == 0:
                     output_files.append(expected_file)
-            except:
+            except Exception as e:
+                print(f"❌ Error getting output files: {e}")
                 continue
         return output_files
 
