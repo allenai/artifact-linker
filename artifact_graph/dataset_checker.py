@@ -36,8 +36,14 @@ IMPORTANT: refer to the following dataset README section for the dataset informa
 
 Requirements:
 1. Load and verify the dataset can be accessed
-2. Get dataset splits information (train/test/validation sizes)
+2. Get dataset splits information (train/test/validation sizes)  
 3. Extract ONE actual example from each available split
+
+IMPORTANT DATASET LOADING NOTES:
+- Some datasets contain custom code and require trust_remote_code=True
+- Always use: load_dataset("{dataset_name}", trust_remote_code=True) for MTEB datasets
+- If you get an error about "custom code", add trust_remote_code=True parameter
+- For private datasets, you may need to use authentication token
 
 ONLY save results to 'dataset_metadata.json' if dataset access is successful. Use this structure:
 {{
