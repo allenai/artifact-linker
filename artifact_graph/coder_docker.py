@@ -4,7 +4,7 @@ Refactored DockerCoder - using separated components
 
 import json
 import os
-from typing import Dict
+from typing import Dict, Optional, List
 
 from .dataset_checker import DatasetCheckGenerator
 from .dependency_parser import DependencyParser
@@ -26,6 +26,7 @@ class DockerCoder:
         dataset_timeout: int = 900,  # 15 minutes for dataset check
         model_timeout: int = 600,  # 10 minutes for model check
         eval_timeout: int = 600,  # 10 minutes for evaluation
+        gpu_device_ids: Optional[List[int]] = None,
     ):
         self.model = model
         self.output_dir = output_dir
@@ -39,7 +40,7 @@ class DockerCoder:
         self.client, self.actual_model = create_client(model)
 
         # Initialize Docker manager
-        self.docker_manager = DockerManager(memory_limit=memory_limit, enable_gpu=enable_gpu)
+        self.docker_manager = DockerManager(memory_limit=memory_limit, enable_gpu=enable_gpu, gpu_device_ids=gpu_device_ids)
 
         # 初始化各组件
         self.dataset_generator = DatasetCheckGenerator(self)
