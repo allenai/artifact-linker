@@ -41,7 +41,7 @@ Requirements:
 
 IMPORTANT DATASET LOADING NOTES:
 - Some datasets contain custom code and require trust_remote_code=True
-- Always use: load_dataset("{dataset_name}", trust_remote_code=True) for MTEB datasets
+- Always use: load_dataset("{dataset_name}", trust_remote_code=True) for datasets
 - If you get an error about "custom code", add trust_remote_code=True parameter
 - For private datasets, you may need to use authentication token
 

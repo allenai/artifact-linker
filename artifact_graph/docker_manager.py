@@ -114,6 +114,8 @@ class DockerManager:
 
         try:
             import threading
+            import signal
+            import time
 
             # Create a result container
             result_container = {"result": None, "error": None}
@@ -141,11 +143,12 @@ class DockerManager:
                 # Timeout occurred
                 print(f"⏰ Script {script_name} timed out after {timeout}s")
                 try:
-                    # Try to stop the container execution (best effort)
-                    self.container.exec_run("pkill -f python", workdir="/workspace")
+                    # Simple: just restart the container
+                    print("🔄 Restarting container due to timeout...")
+                    self.container.restart()
                 except Exception as e:
-                    print(f"❌ Error stopping container: {e}")
-                    pass
+                    print(f"❌ Error restarting container: {e}")
+                
                 return -1, f"Script execution timed out after {timeout} seconds"
 
             # Check if execution completed successfully
@@ -236,11 +239,16 @@ class DockerManager:
         if self.container:
             try:
                 print("🧹 Cleaning up container...")
-                self.container.stop()
-                self.container.remove()
+                self.container.stop(timeout=5)
+                self.container.remove(force=True)
                 print("✅ Container cleaned up")
             except Exception as e:
                 print(f"⚠️ Error during cleanup: {e}")
+                # Force remove if normal cleanup fails
+                try:
+                    self.container.remove(force=True)
+                except:
+                    pass
             finally:
                 self.container = None
 
@@ -336,3 +344,29 @@ class DockerConfig:
                 status["gpu_available"] = False
 
         return status
+
+    @classmethod
+    def cleanup_stale_containers(cls) -> int:
+        """清理所有simple-coder容器"""
+        try:
+            docker_client = docker.from_env()
+            containers = docker_client.containers.list(all=True)
+            
+            cleaned_count = 0
+            print("🧹 Cleaning up simple-coder containers...")
+            
+            for container in containers:
+                try:
+                    if "simple-coder" in str(container.image.tags):
+                        print(f"Removing {container.name}...")
+                        container.remove(force=True)
+                        cleaned_count += 1
+                except Exception:
+                    continue
+            
+            print(f"✅ Cleaned up {cleaned_count} containers")
+            return cleaned_count
+            
+        except Exception as e:
+            print(f"❌ Cleanup failed: {e}")
+            return 0

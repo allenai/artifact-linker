@@ -224,7 +224,7 @@ def compare_results(results_dir, reference_json):
 
     if matches:
         print("✅ Matching results:")
-        for i, match in enumerate(matches[:10], 1):
+        for i, match in enumerate(matches, 1):
             if match["percentage_conversion"]:
                 print(
                     f"  {i:2d}. {match['metric']}: {match['actual_value']:.4f} ≈ {match['adjusted_expected']:.4f} (original: {match['expected_value']:.1f}%)"
@@ -234,8 +234,6 @@ def compare_results(results_dir, reference_json):
                     f"  {i:2d}. {match['metric']}: {match['actual_value']:.4f} ≈ {match['expected_value']:.4f}"
                 )
             print(f"      📁 {match['dir_name']}")
-        if len(matches) > 10:
-            print(f"      ... ({len(matches)-10} more matches)")
         print()
 
     if mismatches:
