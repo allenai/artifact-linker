@@ -101,6 +101,8 @@ def compare_results(results_dir, reference_json):
             dir_name = os.path.basename(os.path.dirname(results_file))
             model, dataset, metric = parse_directory_name(dir_name)
 
+
+
             # Read actual results
             with open(results_file, "r", encoding="utf-8") as f:
                 actual_data = json.load(f)
@@ -116,9 +118,6 @@ def compare_results(results_dir, reference_json):
             if metric in actual_data:
                 primary_metric = metric
                 actual_value = actual_data[metric]
-            elif "accuracy" in actual_data:
-                primary_metric = "accuracy"
-                actual_value = actual_data["accuracy"]
             else:
                 # Find the first numeric metric
                 for key, value in actual_data.items():
