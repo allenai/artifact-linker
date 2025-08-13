@@ -77,14 +77,16 @@ def get_model_downloads(model_id: str, model_downloads_map: Dict[str, int]) -> i
 def extract_model_dataset_metrics(data: Dict[str, Any], min_downloads: int = 100, 
                                   model_downloads_map: Dict[str, int] = None) -> List[Dict[str, Any]]:
     """
-    Return list: each model -> {model_id, model_downloads, dataset_id, dataset_downloads, metrics}
+    Return list: each unique model-dataset pair -> {model_id, model_downloads, dataset_id, dataset_downloads, metrics}
     Rule: only consider pairings with perfect fuzzy match and both model/dataset downloads > min_downloads;
-    if multiple for same model, take the one with highest downloads.
+    for the same model-dataset name combination, keep only the one with highest total downloads;
+    for different model-dataset combinations, keep each one.
     """
     if model_downloads_map is None:
         model_downloads_map = {}
         
-    model_best: Dict[str, Dict[str, Any]] = {}
+    # Use (model_id, dataset_id) as key to deduplicate same name combinations
+    pair_best: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     for pairing in data.get('pairings', []):
         if not has_perfect_fuzzy_match(pairing):
@@ -102,19 +104,30 @@ def extract_model_dataset_metrics(data: Dict[str, Any], min_downloads: int = 100
             continue
 
         metrics = pairing.get('raw_llm_output', {}).get('metrics', {})
+        
+        # Create key for this model-dataset combination
+        pair_key = (model_id, dataset_id)
+        total_downloads = model_downloads + dataset_downloads
 
-        # Update if this model not recorded yet or current downloads higher
-        prev = model_best.get(model_id)
-        if (prev is None) or (dataset_downloads > prev['dataset_downloads']):
-            model_best[model_id] = {
+        # Keep this pair if it's new or has higher total downloads than existing
+        prev = pair_best.get(pair_key)
+        if (prev is None) or (total_downloads > prev['total_downloads']):
+            pair_best[pair_key] = {
                 "model_id": model_id,
                 "model_downloads": model_downloads,
                 "dataset_id": dataset_id,
                 "dataset_downloads": dataset_downloads,
+                "total_downloads": total_downloads,
                 "metrics": metrics
             }
 
-    return list(model_best.values())
+    # Remove the total_downloads field from final results
+    results = []
+    for pair_data in pair_best.values():
+        result = {k: v for k, v in pair_data.items() if k != 'total_downloads'}
+        results.append(result)
+    
+    return results
 
 
 def save_results(results: List[Dict[str, Any]], output_file: str) -> None:
@@ -124,7 +137,7 @@ def save_results(results: List[Dict[str, Any]], output_file: str) -> None:
         "extraction_criteria": {
             "perfect_fuzzy_match": "Only keep pairings with fuzzy match score=100",
             "download_threshold": "Only consider models and datasets with >100 downloads",
-            "dataset_selection": "When multiple for same model, select dataset_id with highest downloads"
+            "deduplication": "For same model-dataset name combination, keep only the one with highest total downloads; for different combinations, keep each one"
         }
     }
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -133,13 +146,13 @@ def save_results(results: List[Dict[str, Any]], output_file: str) -> None:
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='Extract perfect fuzzy matched dataset with highest downloads for each model')
+    parser = argparse.ArgumentParser(description='Extract unique perfect fuzzy matched model-dataset pairs, keeping highest downloads for duplicate names')
     parser.add_argument('-i', '--input', default='output/metric_pairings.json', help='Input file path')
     parser.add_argument('-o', '--output', default='output/perfect_model_dataset_metrics.json', help='Output file path')
     parser.add_argument('-v', '--verbose', action='store_true', help='Print detailed results')
     parser.add_argument('--min-downloads', type=int, default=100, help='Minimum downloads threshold for models and datasets (default: 100)')
     args = parser.parse_args()
-
+    
     print(f"Loading {args.input} ...")
     data = load_metric_pairings(args.input)
     
@@ -149,11 +162,11 @@ def main():
 
     print("Extracting...")
     results = extract_model_dataset_metrics(data, args.min_downloads, model_downloads_map)
-
+    
     print(f"Total pairings: {len(data.get('pairings', []))}")
-    print(f"Models meeting criteria: {len(results)}")
+    print(f"Model-dataset pairs meeting criteria: {len(results)}")
     print(f"Match rate: {len(results) / max(1, len(data.get('pairings', []))) * 100:.2f}%")
-
+    
     if args.verbose:
         for r in results[:10]:
             print(f"\nModel: {r['model_id']} (downloads={r['model_downloads']})")
@@ -169,4 +182,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main() 
