@@ -17,10 +17,12 @@ class DockerManager:
         image_name: str = "simple-coder:latest",
         memory_limit: str = "8g",
         enable_gpu: bool = True,
+        gpu_device_ids: Optional[List[int]] = None,
     ):
         self.image_name = image_name
         self.memory_limit = memory_limit
         self.enable_gpu = enable_gpu
+        self.gpu_device_ids = gpu_device_ids  # None means use all GPUs, [1] means use only GPU 1
         self.docker_client = None
         self.container = None
         self.installed_packages = set()  # 缓存已安装的包
@@ -53,9 +55,21 @@ class DockerManager:
 
             # 添加GPU支持（如果启用）
             if self.enable_gpu:
-                container_config["device_requests"] = [
-                    docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
-                ]
+                if self.gpu_device_ids is not None:
+                    # Use specific GPU devices
+                    container_config["device_requests"] = [
+                        docker.types.DeviceRequest(
+                            device_ids=[str(device_id) for device_id in self.gpu_device_ids],
+                            capabilities=[["gpu"]]
+                        )
+                    ]
+                    print(f"🎮 Using GPU device(s): {self.gpu_device_ids}")
+                else:
+                    # Use all available GPUs (original behavior)
+                    container_config["device_requests"] = [
+                        docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+                    ]
+                    print("🎮 Using all available GPUs")
 
             # 创建并启动容器
             print(f"🐳 Creating Docker container ({self.image_name})...")
@@ -272,7 +286,7 @@ class DockerManager:
 
         try:
             container_info = self.container.attrs
-            return {
+            info = {
                 "id": container_info.get("Id", "")[:12],
                 "name": container_info.get("Name", "").lstrip("/"),
                 "status": container_info.get("State", {}).get("Status", "unknown"),
@@ -280,6 +294,12 @@ class DockerManager:
                 "memory_limit": self.memory_limit,
                 "gpu_enabled": self.enable_gpu,
             }
+            
+            # Add GPU device info if specified
+            if self.enable_gpu and self.gpu_device_ids is not None:
+                info["gpu_devices"] = self.gpu_device_ids
+            
+            return info
         except Exception:
             return {}
 
@@ -305,6 +325,7 @@ class DockerConfig:
         image_name: Optional[str] = None,
         memory_limit: Optional[str] = None,
         enable_gpu: Optional[bool] = None,
+        gpu_device_ids: Optional[List[int]] = None,
         **kwargs,
     ) -> DockerManager:
         """创建配置好的Docker管理器"""
@@ -313,6 +334,7 @@ class DockerConfig:
             image_name=image_name or cls.DEFAULT_IMAGE,
             memory_limit=memory_limit or cls.DEFAULT_MEMORY_LIMIT,
             enable_gpu=enable_gpu if enable_gpu is not None else cls.GPU_ENABLED,
+            gpu_device_ids=gpu_device_ids,
         )
 
         return manager
