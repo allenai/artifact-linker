@@ -1,4 +1,5 @@
 import os
+import json
 
 import openai
 from tqdm import tqdm
@@ -24,14 +25,16 @@ class LLMLinkPredictor:
         model_neighbors=None,
         dataset_neighbors=None,
         mode="simple",
+        metric_name=None,
     ):
+        metric_str = metric_name if metric_name else "performance"
         if mode == "simple":
             prompt = f"Given a machine learning model named '{model_name}' and a dataset named '{dataset_name}'"
             if model_card:
                 prompt += f"\nModel card: {model_card}"
             if dataset_card:
                 prompt += f"\nDataset card: {dataset_card}"
-            prompt += "\nPlease predict the expected accuracy (as a float between 0 and 1) that this model would achieve on this dataset. Only output a single float number between 0 and 1."
+            prompt += f"\nPlease predict the expected {metric_str} that this model would achieve on this dataset. Provide your answer as a JSON object with two keys: 'prediction' (a float between 0 and 1) and 'reason' (a brief explanation of your reasoning)."
             return prompt
         elif mode == "neighborhood":
             prompt = f"Given a machine learning model named '{model_name}' and a dataset named '{dataset_name}'"
@@ -39,7 +42,7 @@ class LLMLinkPredictor:
                 prompt += f"\nModel card: {model_card}"
             if dataset_card:
                 prompt += f"\nDataset card: {dataset_card}"
-            prompt += "\nThe model's performance on other datasets:\n"
+            prompt += f"\nThe model's performance on other datasets (metric: {metric_str}):\n"
             if model_neighbors:
                 for ds, acc in model_neighbors:
                     prompt += f"- {ds}: {acc:.2f}\n"
@@ -52,9 +55,12 @@ class LLMLinkPredictor:
             else:
                 prompt += "- (no other models)\n"
             prompt += (
-                "Please predict the expected accuracy (as a float between 0 and 1) that this model would achieve on this dataset. "
-                "Only output a single float number between 0 and 1."
+                f"Please predict the expected {metric_name} that this model would achieve on this dataset. "
+                "Provide your answer as a JSON object with two keys: 'prediction' (a float between 0 and 1) and 'reason' (a brief explanation of your reasoning)."
             )
+            return prompt
+        elif mode == "zero-shot":
+            prompt = f"Given a machine learning model named '{model_name}' and a dataset named '{dataset_name}', please predict the expected {metric_str} that this model would achieve on this dataset. Provide your answer as a JSON object with two keys: 'prediction' (a float between 0 and 1) and 'reason' (a brief explanation of your reasoning)."
             return prompt
         else:
             raise ValueError(f"Unknown mode: {mode}")
@@ -66,23 +72,16 @@ class LLMLinkPredictor:
         model_dir="output/models",
         dataset_dir="output/datasets",
         mode="simple",
+        metric_name=None,
     ):
-        """
-        Predicts accuracy for given model-dataset pairs.
-
-        Args:
-            edge_pairs (list of tuples): List of (model_name, dataset_name) pairs.
-            G (nx.Graph): The artifact graph.
-            model_dir (str): Directory for model artifacts.
-            dataset_dir (str): Directory for dataset artifacts.
-            mode (str): "simple" or "neighborhood".
-        """
+        if mode == "neighborhood" and not metric_name:
+            raise ValueError("A specific metric_name must be provided for 'neighborhood' mode.")
         results = []
         for model_name, dataset_name in tqdm(edge_pairs, desc="Predicting Links"):
             try:
                 # Load metadata and readme using collectors
                 model_card_bytes = ModelCollector.load_readme(
-                    model_name, readme_dir=os.path.join(model_dir, "readmes")
+                    model_name, readme_dir=os.path.join(model_dir, "readmes_masked")
                 )
                 if model_card_bytes:
                     model_card = model_card_bytes.decode("utf-8", errors="ignore")
@@ -91,7 +90,7 @@ class LLMLinkPredictor:
                     print(f"Warning: Could not find README for model {model_name}")
 
                 dataset_card_bytes = DatasetCollector.load_readme(
-                    dataset_name, readme_dir=os.path.join(dataset_dir, "readmes")
+                    dataset_name, readme_dir=os.path.join(dataset_dir, "readmes_masked")
                 )
                 if dataset_card_bytes:
                     dataset_card = dataset_card_bytes.decode("utf-8", errors="ignore")
@@ -108,19 +107,19 @@ class LLMLinkPredictor:
                         if (
                             neighbor != dataset_name
                             and G.nodes[neighbor].get("type") == "dataset"
-                            and "accuracy" in G[model_name][neighbor]
+                            and metric_name in G[model_name][neighbor]
                         ):
-                            model_neighbors.append((neighbor, G[model_name][neighbor]["accuracy"]))
+                            model_neighbors.append((neighbor, G[model_name][neighbor][metric_name]))
 
                     dataset_neighbors = []
                     for neighbor in G.neighbors(dataset_name):
                         if (
                             neighbor != model_name
                             and G.nodes[neighbor].get("type") == "model"
-                            and "accuracy" in G[neighbor][dataset_name]
+                            and metric_name in G[neighbor][dataset_name]
                         ):
                             dataset_neighbors.append(
-                                (neighbor, G[neighbor][dataset_name]["accuracy"])
+                                (neighbor, G[neighbor][dataset_name][metric_name])
                             )
 
                 # Build prompt
@@ -132,25 +131,44 @@ class LLMLinkPredictor:
                     model_neighbors,
                     dataset_neighbors,
                     mode=mode,
+                    metric_name=metric_name,
                 )
 
                 # Get prediction from OpenAI
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=8,
+                    max_tokens=256,
                     temperature=0.0,
+                    response_format={"type": "json_object"},
                 )
                 answer = response.choices[0].message.content.strip()
 
                 # Parse result
                 try:
-                    prob = float(answer.split()[0])
-                    prob = max(0.0, min(1.0, prob))
-                except Exception:
-                    prob = None
+                    result_json = json.loads(answer)
+                    prediction = result_json.get("prediction")
 
-                results.append(prob)
+                    if prediction is None:
+                        prob = None
+                    else:
+                        prob = float(prediction)
+                        prob = max(0.0, min(1.0, prob))
+
+                    reason = result_json.get("reason", "")
+
+                    if prob is not None:
+                        prediction_result = {"prediction": prob, "reason": reason}
+                    else:
+                        prediction_result = None
+
+                except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    print(
+                        f"Warning: Could not parse LLM JSON output for ({model_name}, {dataset_name}). Output was: {answer}"
+                    )
+                    prediction_result = None
+
+                results.append(prediction_result)
 
             except Exception as e:
                 print(f"Error predicting for ({model_name}, {dataset_name}): {e}")

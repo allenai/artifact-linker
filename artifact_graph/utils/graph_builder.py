@@ -1,3 +1,4 @@
+import json
 from typing import Dict, Optional
 
 import networkx as nx
@@ -93,6 +94,97 @@ def load_artifact_graph(
 
                 G.add_edge(model_id, ds_id, **{metric_key_substring: metric_value})
 
+    return G
+
+
+def load_artifact_graph_from_json(
+    json_file: str = "perfect_model_dataset_metrics.json",
+    min_downloads: int = 1,
+    metric_key: Optional[str] = "accuracy",
+) -> nx.Graph:
+    """
+    Construct a bipartite graph of models and datasets from perfect_model_dataset_metrics.json.
+
+    Nodes:
+      - model nodes with attributes {type: 'model', downloads}
+      - dataset nodes with attributes {type: 'dataset', downloads}
+
+    Edges:
+      - Connect model to dataset with metric value(s) from the JSON file.
+      - Edge attribute: {metric_key: metric_value} or all metrics if metric_key is None
+
+    Args:
+      json_file: Path to the perfect_model_dataset_metrics.json file.
+      min_downloads: Minimum downloads threshold for filtering nodes.
+      metric_key: The metric key to use from the metrics object. If None, include all metrics.
+
+    Returns:
+      An undirected NetworkX graph.
+    """
+    G = nx.Graph()
+    
+    # Load data from JSON file
+    try:
+        with open(json_file, "r") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: JSON file not found at {json_file}")
+        return G
+    
+    results = data.get("results", [])
+    print(f"Loaded {len(results)} model-dataset pairs from {json_file}")
+    
+    for item in results:
+        model_id = item["model_id"]
+        dataset_id = item["dataset_id"]
+        model_downloads = item.get("model_downloads", 0)
+        dataset_downloads = item.get("dataset_downloads", 0)
+        metrics = item.get("metrics", {})
+        
+        # Apply minimum downloads filter
+        if model_downloads < min_downloads or dataset_downloads < min_downloads:
+            continue
+            
+        # Determine which metrics to include
+        if metric_key is None:
+            # Include all metrics
+            edge_attributes = {}
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    metric_value = float(value)
+                    # Normalize percentage values
+                    if metric_value > 1:
+                        metric_value /= 100
+                    edge_attributes[key] = metric_value
+            
+            # Skip if no valid metrics found
+            if not edge_attributes:
+                continue
+        else:
+            # Use specific metric key
+            metric_value = metrics.get(metric_key)
+            if metric_value is None:
+                continue
+                
+            # Ensure metric value is a float between 0 and 1
+            try:
+                metric_value = float(metric_value)
+            except Exception as e:
+                print(e)
+                continue
+                
+            edge_attributes = {metric_key: metric_value}
+            
+        # Add nodes if they don't exist
+        if not G.has_node(model_id):
+            G.add_node(model_id, type=MODEL_NODE, downloads=model_downloads)
+        if not G.has_node(dataset_id):
+            G.add_node(dataset_id, type=DATASET_NODE, downloads=dataset_downloads)
+            
+        # Add edge with metric value(s)
+        G.add_edge(model_id, dataset_id, **edge_attributes)
+    
+    print(f"Built graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
     return G
 
 

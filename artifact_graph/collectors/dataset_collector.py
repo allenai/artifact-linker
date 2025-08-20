@@ -322,6 +322,7 @@ class DatasetCollector:
         """Load saved README file for a given dataset ID."""
         fname = dataset_id.replace("/", "__") + ".md"
         path = Path(readme_dir) / fname
+        print(path)
         if not path.exists():
             return None
         return path.read_bytes()

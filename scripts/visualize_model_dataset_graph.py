@@ -112,15 +112,73 @@ def create_model_dataset_graph(results, min_downloads=None, max_nodes=None):
     return G
 
 
+def extract_largest_component(G):
+    """
+    Extract the largest connected component from the graph
+    
+    Args:
+        G: NetworkX graph
+        
+    Returns:
+        NetworkX graph containing only the largest connected component
+    """
+    if G.number_of_nodes() == 0:
+        return G
+    
+    # Get all connected components
+    connected_components = list(nx.connected_components(G))
+    
+    if not connected_components:
+        return G
+    
+    # Find the largest component
+    largest_component = max(connected_components, key=len)
+    
+    # Create subgraph with only the largest component
+    largest_subgraph = G.subgraph(largest_component).copy()
+    
+    # Print component statistics
+    print(f"🔗 Connected component analysis:")
+    print(f"  Total components: {len(connected_components)}")
+    print(f"  Largest component size: {len(largest_component)} nodes")
+    
+    if len(connected_components) > 1:
+        component_sizes = sorted([len(cc) for cc in connected_components], reverse=True)
+        print(f"  Component sizes: {component_sizes[:10]}...")  # Show top 10
+        
+        # Calculate what percentage of nodes are in the largest component
+        percentage = (len(largest_component) / G.number_of_nodes()) * 100
+        print(f"  Largest component coverage: {percentage:.1f}% of all nodes")
+    
+    # Show node type breakdown for largest component
+    model_nodes = [n for n in largest_component if G.nodes[n].get("type") == MODEL]
+    dataset_nodes = [n for n in largest_component if G.nodes[n].get("type") == DATASET]
+    
+    print(f"  Largest component composition:")
+    print(f"  - Models: {len(model_nodes)}")
+    print(f"  - Datasets: {len(dataset_nodes)}")
+    print(f"  - Edges: {largest_subgraph.number_of_edges()}")
+    
+    return largest_subgraph
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Visualize model-dataset relationship graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Basic usage
   %(prog)s data.json output.html
-  %(prog)s data.json output.html --no-filter
-  %(prog)s data.json output.html --min-downloads 5000 --max-nodes 200
+  
+  # Only visualize the largest connected component
+  %(prog)s data.json output.html --largest-component
+  
+  # Custom filtering with largest component
+  %(prog)s data.json output.html --min-downloads 5000 --largest-component
+  
+  # No filtering but only largest component
+  %(prog)s data.json output.html --no-filter --largest-component
         """
     )
     
@@ -156,6 +214,12 @@ Examples:
         help="Disable automatic filtering for large datasets"
     )
     
+    parser.add_argument(
+        "--largest-component", 
+        action="store_true",
+        help="Only visualize the largest connected component"
+    )
+    
     args = parser.parse_args()
     
     # Convert to absolute paths
@@ -188,7 +252,7 @@ Examples:
         if min_downloads is None:
             min_downloads = 1000
         if max_nodes is None:
-            max_nodes = 500
+            max_nodes = 50000
         print("⚠️  Dataset is large, applying automatic filtering...")
         print(f"   - Minimum downloads: {min_downloads}")
         print(f"   - Maximum nodes: {max_nodes}")
@@ -203,6 +267,9 @@ Examples:
         if max_nodes:
             print(f"   - Maximum nodes: {max_nodes}")
     
+    if args.largest_component:
+        print("🔗 Largest component mode enabled")
+    
     # Create graph
     G = create_model_dataset_graph(results, min_downloads, max_nodes)
     
@@ -210,11 +277,24 @@ Examples:
         print("❌ No nodes to visualize")
         return
     
+    # Extract largest component if requested
+    if args.largest_component:
+        print()  # Add blank line for better formatting
+        G = extract_largest_component(G)
+        
+        if G.number_of_nodes() == 0:
+            print("❌ No nodes in largest component to visualize")
+            return
+    
     # Visualize
     print("\n🎨 Generating visualization...")
     visualize_graph_interactive(G, output_file)
     
-    print(f"\n✅ Visualization complete! Please open in browser: {output_file}")
+    if args.largest_component:
+        print(f"\n✅ Visualization complete! Showing largest connected component.")
+        print(f"   Open in browser: {output_file}")
+    else:
+        print(f"\n✅ Visualization complete! Please open in browser: {output_file}")
 
 
 if __name__ == "__main__":
