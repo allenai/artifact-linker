@@ -229,7 +229,7 @@ class DockerManager:
             print(f"🔧 Using Aider to fix {script_name}...")
 
             fix_prompt = (
-                f"Fix the error in {script_name}. Error after running this script: {error_output}"
+                f"Fix the error in {script_name}. Error after running this script: {error_output}. If the error is related to missing dependencies, install the dependencies via pip install and fix the error."
             )
             aider_cmd = (
                 f"""cd /workspace && echo "{fix_prompt}" | aider --no-git --yes {script_name}"""
