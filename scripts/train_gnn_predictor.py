@@ -8,7 +8,7 @@ from torch.optim import AdamW
 
 from artifact_graph.models.gnn_link_predictor import GNNLinkPredictor
 from artifact_graph.utils.graph_builder import (
-    load_artifact_graph,
+    load_artifact_graph_from_json,
     load_pyg_graph_from_networkx,
 )
 
@@ -69,12 +69,14 @@ class GNNTrainer:
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    metric_name = "accuracy"  # Define the metric to predict and use for loading
 
-    # 1. Build graph using load_artifact_graph function
-    G = load_artifact_graph(
-        models_dir="output/models/metadata",
-        datasets_dir="output/datasets/metadata",
-        metrics_dir="output/metrics",
+    # 1. Build graph using load_artifact_graph_from_json function
+    graph_file = "output/perfect_model_dataset_metrics.json"
+    G = load_artifact_graph_from_json(
+        json_file=graph_file,
+        min_downloads=1,
+        metric_key=metric_name,
     )
     print(f"Graph built with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
 
@@ -85,20 +87,26 @@ def main():
     # Using 'x' from data object which is one-hot encoded
     feature_dim = data.x.size(1)
 
-    # 4. Split edges
-    # The graph builder only includes edges with metrics, under the key 'acc'
-    has_accuracy = torch.tensor([d.get("acc") is not None for u, v, d in G.edges(data=True)])
+    # 4. Prepare edges and labels
+    # Since we load from the JSON, all edges in G should have the metric.
+    all_metrics = [d.get(metric_name) for u, v, d in G.edges(data=True)]
 
-    known_edges = data.edge_index[:, has_accuracy]
+    # Create a mask for edges that have a valid metric value (not None)
+    valid_mask = torch.tensor([m is not None for m in all_metrics])
+    known_edges = data.edge_index[:, valid_mask]
+
+    # For valid edges, get their labels and normalize them if they are > 1 (e.g., percentages)
     known_labels = torch.tensor(
-        [d["acc"] for u, v, d in G.edges(data=True) if d.get("acc") is not None], dtype=torch.float
+        [m / 100.0 if m > 1.0 else m for m in all_metrics if m is not None],
+        dtype=torch.float,
     )
 
-    prediction_edges = data.edge_index[:, ~has_accuracy]
+    # The original `prediction_edges` (for edges without metrics) is now empty.
+    # It will be redefined later from the split of known_edges.
 
     # Setup model, optimizer, and loss
     model = GNNLinkPredictor(in_feats=feature_dim, hidden_feats=256).to(device)
-    optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optimizer = AdamW(model.parameters(), lr=1e-2, weight_decay=1e-5)
     loss_fn = nn.MSELoss()
     trainer = GNNTrainer(model, optimizer, loss_fn, device)
 
@@ -169,13 +177,16 @@ def main():
         predicted_accuracies = trainer.predict(data, prediction_edges)
 
         # 7. Evaluate and print prediction results
+        # Cast to float64 for a more precise MSE calculation, matching the evaluation script
         prediction_mse = nn.functional.mse_loss(
-            torch.tensor(predicted_accuracies), prediction_labels
+            torch.tensor(predicted_accuracies, dtype=torch.float64),
+            prediction_labels.to(torch.float64),
         ).item()
         print(f"\nGNN Prediction set MSE: {prediction_mse:.4f}")
 
         print("\n--- GNN Prediction Results ---")
         node_names = data.node_names_ordered
+        results_to_save = []
         for i in range(prediction_edges.size(1)):
             src_idx = prediction_edges[0, i].item()
             dst_idx = prediction_edges[1, i].item()
@@ -188,7 +199,24 @@ def main():
             print(
                 f"  - Model: {model_name}, Dataset: {dataset_name} -> Predicted: {pred_acc:.4f}, Actual: {true_acc:.4f}"
             )
+            results_to_save.append(
+                {
+                    "model_id": model_name,
+                    "dataset_id": dataset_name,
+                    "metric_name": metric_name,
+                    "true_metric": true_acc,
+                    "predicted_metric": float(pred_acc),
+                    "reason": "Predicted by GNN",
+                    "status": "Success",
+                }
+            )
         print("------------------------------")
+
+        # 8. Save results to a file
+        output_file = "output/gnn_predictions.json"
+        with open(output_file, "w") as f:
+            json.dump(results_to_save, f, indent=2)
+        print(f"\nPredictions saved to {output_file}")
 
     else:
         print("\nNo edges in the prediction set.")

@@ -35,11 +35,13 @@ def load_model_data_from_json(file_path: str) -> dict:
                     
                     # Add dataset name
                     if entry.get('dataset_id'):
-                        model_data[model_id]['datasets'].add(entry['dataset_id'])
+                        model_data[model_id]['datasets'].add(entry['dataset_id'].lower())
+                        dataset_id = entry['dataset_id'].split('/')[-1]
+                        model_data[model_id]['datasets'].add(dataset_id.lower())
                     
                     # Add metric names and values
                     if 'metrics' in entry and isinstance(entry['metrics'], dict):
-                        model_data[model_id]['metric_names'].update(entry['metrics'].keys())
+                        model_data[model_id]['metric_names'].update({k.lower() for k in entry['metrics'].keys()})
                         for value in entry['metrics'].values():
                             if isinstance(value, (int, float)):
                                 model_data[model_id]['metric_values'].add(str(value))
@@ -76,11 +78,13 @@ def load_dataset_data_from_json(file_path: str) -> dict:
                     
                     # Add model name
                     if entry.get('model_id'):
-                        dataset_data[dataset_id]['models'].add(entry['model_id'])
+                        dataset_data[dataset_id]['models'].add(entry['model_id'].lower())
+                        model_id = entry['model_id'].split('/')[-1]
+                        dataset_data[dataset_id]['models'].add(model_id.lower())
                     
                     # Add metric names and values
                     if 'metrics' in entry and isinstance(entry['metrics'], dict):
-                        dataset_data[dataset_id]['metric_names'].update(entry['metrics'].keys())
+                        dataset_data[dataset_id]['metric_names'].update({k.lower() for k in entry['metrics'].keys()})
                         for value in entry['metrics'].values():
                             if isinstance(value, (int, float)):
                                 dataset_data[dataset_id]['metric_values'].add(str(value))
@@ -132,6 +136,7 @@ def process_readme_for_model(readme_path: str, output_path: str, model_id: str, 
         print(f"Warning: README file not found at {readme_path}, skipping.")
         return
 
+    content = content.lower()
     # Mask dataset names specific to this model
     masked_content = mask_text(content, model_info['datasets'])
     
