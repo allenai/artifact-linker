@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,10 +44,7 @@ def call_llm(
             "max_tokens": 16000,
         }
 
-        if (
-            "gpt-5" in normalized_model.lower()
-            or "o3-2025-04-16" in normalized_model.lower()
-        ):
+        if "gpt-5" in normalized_model.lower() or "o3-2025-04-16" in normalized_model.lower():
             del completion_params["temperature"]
             del completion_params["max_tokens"]
         if provider:

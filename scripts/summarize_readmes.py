@@ -1,17 +1,21 @@
 import argparse
-import json
+import asyncio
 import importlib.util
+import json
 import os
 import sys
-import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, Optional, Tuple, Set, List
+from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
+
 from tqdm import tqdm
 
 JSONDict = Dict[str, object]
 
-def _load_llm_helpers(repo_root: Path) -> Tuple[Optional[Callable[..., tuple]], Optional[Callable[..., tuple]]]:
+
+def _load_llm_helpers(
+    repo_root: Path,
+) -> Tuple[Optional[Callable[..., tuple]], Optional[Callable[..., tuple]]]:
     llm_py = repo_root / "artifact_graph" / "utils" / "llm.py"
     if not llm_py.exists():
         return None, None
@@ -22,6 +26,7 @@ def _load_llm_helpers(repo_root: Path) -> Tuple[Optional[Callable[..., tuple]], 
     sys.modules["ag_llm"] = mod
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return getattr(mod, "create_client", None), getattr(mod, "get_response_from_llm", None)
+
 
 async def _fallback_openai_client(model: str):
     # Async client (OpenAI Python v1)
@@ -35,9 +40,11 @@ async def _fallback_openai_client(model: str):
         raise RuntimeError("Set OPENAI_API_KEY to use OpenAI fallback.")
     return AsyncOpenAI(api_key=api_key), model
 
+
 @dataclass
 class LLMCaller:
     acall: Callable[[str], Awaitable[str]]  # async call(text) -> str
+
 
 def build_llm_caller(model: str, base_system: str) -> LLMCaller:
     """
@@ -56,6 +63,7 @@ def build_llm_caller(model: str, base_system: str) -> LLMCaller:
             def _run_sync() -> str:
                 out, _ = get_response_from_llm(text, client, resolved_model, base_system)
                 return out
+
             return await asyncio.to_thread(_run_sync)
 
         return LLMCaller(acall=_acall)
@@ -78,8 +86,10 @@ def build_llm_caller(model: str, base_system: str) -> LLMCaller:
         try:
             resp = await client.chat.completions.create(
                 model=resolved_model,
-                messages=[{"role": "system", "content": base_system},
-                          {"role": "user", "content": text}],
+                messages=[
+                    {"role": "system", "content": base_system},
+                    {"role": "user", "content": text},
+                ],
                 response_format={"type": "json_object"},
                 temperature=0,
                 max_tokens=2048,
@@ -88,8 +98,10 @@ def build_llm_caller(model: str, base_system: str) -> LLMCaller:
         except TypeError:
             resp = await client.chat.completions.create(
                 model=resolved_model,
-                messages=[{"role": "system", "content": base_system},
-                          {"role": "user", "content": text}],
+                messages=[
+                    {"role": "system", "content": base_system},
+                    {"role": "user", "content": text},
+                ],
                 temperature=0,
                 max_tokens=2048,
             )
@@ -97,9 +109,11 @@ def build_llm_caller(model: str, base_system: str) -> LLMCaller:
 
     return LLMCaller(acall=_acall)
 
+
 def _owner_repo_to_filename(oid: str) -> str:
     safe = oid.replace("/", "__")
     return f"{safe}_README.md"
+
 
 def _find_readme(readme_dir: Path, oid: str) -> Optional[Path]:
     exact = readme_dir / _owner_repo_to_filename(oid)
@@ -111,6 +125,7 @@ def _find_readme(readme_dir: Path, oid: str) -> Optional[Path]:
         candidates.sort(key=lambda p: ("_README" not in p.name, len(p.name)))
         return candidates[0]
     return None
+
 
 def _load_ids(metrics_json: Path) -> tuple[Set[str], Set[str]]:
     with open(metrics_json, "r", encoding="utf-8") as f:
@@ -125,6 +140,7 @@ def _load_ids(metrics_json: Path) -> tuple[Set[str], Set[str]]:
             dataset_ids.add(did)
     return model_ids, dataset_ids
 
+
 BASE_SYSTEM = (
     "You are a strict JSON generator. Return ONLY a valid JSON object with keys:\n"
     '- "model_info": string,\n'
@@ -135,8 +151,12 @@ BASE_SYSTEM = (
 MODEL_USER_INSTR = "Summarize the following model README. Keep ~150-250 words for model_info; include evaluation_results and code_example if present. Return only the JSON object."
 DATASET_USER_INSTR = "Summarize the following dataset README. Keep ~150-250 words for model_info; include evaluation_results and code_example if present. Return only the JSON object."
 
-def _assemble_user_prompt(instruction: str, readme_text: str, extra_prompt: str, max_chars: int = 12000) -> str:
+
+def _assemble_user_prompt(
+    instruction: str, readme_text: str, extra_prompt: str, max_chars: int = 12000
+) -> str:
     return f"{instruction}{extra_prompt}\n\n{readme_text[:max_chars]}"
+
 
 def _parse_json_from_llm(raw: str) -> JSONDict:
     cleaned = (raw or "").strip().replace("```json", "").replace("```", "").strip()
@@ -148,7 +168,10 @@ def _parse_json_from_llm(raw: str) -> JSONDict:
         pass
     return {"summary_raw": cleaned}
 
-async def _with_retries(coro_factory: Callable[[], Awaitable[str]], *, retries: int = 4, base_delay: float = 0.8) -> str:
+
+async def _with_retries(
+    coro_factory: Callable[[], Awaitable[str]], *, retries: int = 4, base_delay: float = 0.8
+) -> str:
     last_exc = None
     for attempt in range(retries):
         try:
@@ -156,10 +179,11 @@ async def _with_retries(coro_factory: Callable[[], Awaitable[str]], *, retries: 
         except Exception as e:
             last_exc = e
             # simple exponential backoff with jitter
-            delay = base_delay * (2 ** attempt)
+            delay = base_delay * (2**attempt)
             delay = delay * (0.8 + 0.4 * os.urandom(1)[0] / 255.0)
             await asyncio.sleep(delay)
     raise last_exc  # type: ignore
+
 
 async def summarize_ids_to_json_async(
     metrics_json: Path,
@@ -182,7 +206,9 @@ async def summarize_ids_to_json_async(
     max_concurrency = int(os.environ.get("LLM_CONCURRENCY", "8"))
     sem = asyncio.Semaphore(max_concurrency)
 
-    async def _summarize_one(kind: str, oid: str, path: Path, instruction: str) -> Tuple[str, JSONDict]:
+    async def _summarize_one(
+        kind: str, oid: str, path: Path, instruction: str
+    ) -> Tuple[str, JSONDict]:
         text = path.read_text(encoding="utf-8", errors="ignore")
         user_prompt = _assemble_user_prompt(instruction, text, extra_prompt)
 
@@ -228,6 +254,7 @@ async def summarize_ids_to_json_async(
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(out, indent=2), encoding="utf-8")
 
+
 def summarize_ids_to_json(
     metrics_json: Path,
     model_readme_dir: Path,
@@ -248,16 +275,29 @@ def summarize_ids_to_json(
         )
     )
 
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Summarize model/dataset READMEs based on IDs in metrics JSON")
-    ap.add_argument("--metrics-json", type=Path, default=Path("output/perfect_model_dataset_metrics.json"))
+    ap = argparse.ArgumentParser(
+        description="Summarize model/dataset READMEs based on IDs in metrics JSON"
+    )
+    ap.add_argument(
+        "--metrics-json", type=Path, default=Path("output/perfect_model_dataset_metrics.json")
+    )
     ap.add_argument("--model-readme-dir", type=Path, default=Path("output/models/readmes"))
     ap.add_argument("--dataset-readme-dir", type=Path, default=Path("output/datasets/readmes"))
     ap.add_argument("-o", "--output-json", type=Path, default=Path("output/readme_summaries.json"))
     ap.add_argument("-m", "--model", type=str, default="gpt-4o")
     ap.add_argument("--prompt-file", type=Path, default=None)
     args = ap.parse_args()
-    summarize_ids_to_json(args.metrics_json, args.model_readme_dir, args.dataset_readme_dir, args.output_json, args.model, args.prompt_file)
+    summarize_ids_to_json(
+        args.metrics_json,
+        args.model_readme_dir,
+        args.dataset_readme_dir,
+        args.output_json,
+        args.model,
+        args.prompt_file,
+    )
+
 
 if __name__ == "__main__":
     main()

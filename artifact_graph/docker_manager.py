@@ -60,7 +60,7 @@ class DockerManager:
                     container_config["device_requests"] = [
                         docker.types.DeviceRequest(
                             device_ids=[str(device_id) for device_id in self.gpu_device_ids],
-                            capabilities=[["gpu"]]
+                            capabilities=[["gpu"]],
                         )
                     ]
                     print(f"🎮 Using GPU device(s): {self.gpu_device_ids}")
@@ -128,8 +128,6 @@ class DockerManager:
 
         try:
             import threading
-            import signal
-            import time
 
             # Create a result container
             result_container = {"result": None, "error": None}
@@ -162,7 +160,7 @@ class DockerManager:
                     self.container.restart()
                 except Exception as e:
                     print(f"❌ Error restarting container: {e}")
-                
+
                 return -1, f"Script execution timed out after {timeout} seconds"
 
             # Check if execution completed successfully
@@ -228,9 +226,7 @@ class DockerManager:
         try:
             print(f"🔧 Using Aider to fix {script_name}...")
 
-            fix_prompt = (
-                f"Fix the error in {script_name}. Error after running this script: {error_output}. If the error is related to missing dependencies, install the dependencies via pip install and fix the error."
-            )
+            fix_prompt = f"Fix the error in {script_name}. Error after running this script: {error_output}. If the error is related to missing dependencies, install the dependencies via pip install and fix the error."
             aider_cmd = (
                 f"""cd /workspace && echo "{fix_prompt}" | aider --no-git --yes {script_name}"""
             )
@@ -294,11 +290,11 @@ class DockerManager:
                 "memory_limit": self.memory_limit,
                 "gpu_enabled": self.enable_gpu,
             }
-            
+
             # Add GPU device info if specified
             if self.enable_gpu and self.gpu_device_ids is not None:
                 info["gpu_devices"] = self.gpu_device_ids
-            
+
             return info
         except Exception:
             return {}
@@ -373,10 +369,10 @@ class DockerConfig:
         try:
             docker_client = docker.from_env()
             containers = docker_client.containers.list(all=True)
-            
+
             cleaned_count = 0
             print("🧹 Cleaning up simple-coder containers...")
-            
+
             for container in containers:
                 try:
                     if "simple-coder" in str(container.image.tags):
@@ -385,10 +381,10 @@ class DockerConfig:
                         cleaned_count += 1
                 except Exception:
                     continue
-            
+
             print(f"✅ Cleaned up {cleaned_count} containers")
             return cleaned_count
-            
+
         except Exception as e:
             print(f"❌ Cleanup failed: {e}")
             return 0

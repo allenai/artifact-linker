@@ -11,7 +11,6 @@ import numpy as np
 from artifact_graph.models.llm_link_predictor import LLMLinkPredictor
 from artifact_graph.utils.graph_builder import load_artifact_graph_from_json
 
-
 Edge = Tuple[str, str]
 
 
@@ -23,9 +22,7 @@ def _load_summaries(path: Path) -> Dict[str, Any]:
         return data if isinstance(data, dict) else {}
 
 
-def _extract_prediction_data(
-    graph_file: Path, metric_name: str
-) -> Tuple[List[Edge], List[float]]:
+def _extract_prediction_data(graph_file: Path, metric_name: str) -> Tuple[List[Edge], List[float]]:
     try:
         with open(graph_file, "r") as f:
             data = json.load(f)
@@ -107,9 +104,7 @@ def run(
         edges_to_predict = edges_to_predict[:max_pairs]
         true_metrics = true_metrics[:max_pairs]
 
-    print(
-        f"Total pairs to predict: {len(edges_to_predict)} (mode={mode}, metric={metric_name})"
-    )
+    print(f"Total pairs to predict: {len(edges_to_predict)} (mode={mode}, metric={metric_name})")
 
     # 2. Predict
     predictor = LLMLinkPredictor(model_name=model_name)
@@ -126,9 +121,7 @@ def run(
     valid_predictions = []
     valid_true_metrics = []
 
-    for edge, true_metric, result in zip(
-        edges_to_predict, true_metrics, predicted_results
-    ):
+    for edge, true_metric, result in zip(edges_to_predict, true_metrics, predicted_results):
         model, dataset = edge
         row = {
             "model_id": model,
@@ -170,9 +163,7 @@ def run(
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument(
-        "--graph-file", default="output/perfect_model_dataset_metrics.json"
-    )
+    p.add_argument("--graph-file", default="output/perfect_model_dataset_metrics.json")
     p.add_argument("--summaries-file", default="output/readme_summaries.json")
     p.add_argument(
         "--model",

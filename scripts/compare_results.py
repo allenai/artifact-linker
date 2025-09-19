@@ -101,8 +101,6 @@ def compare_results(results_dir, reference_json):
             dir_name = os.path.basename(os.path.dirname(results_file))
             model, dataset, metric = parse_directory_name(dir_name)
 
-
-
             # Read actual results
             with open(results_file, "r", encoding="utf-8") as f:
                 actual_data = json.load(f)

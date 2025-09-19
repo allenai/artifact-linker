@@ -4,7 +4,7 @@ Refactored DockerCoder - using separated components
 
 import json
 import os
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 from .dataset_checker import DatasetCheckGenerator
 from .dependency_parser import DependencyParser
@@ -40,7 +40,9 @@ class DockerCoder:
         self.client, self.actual_model = create_client(model)
 
         # Initialize Docker manager
-        self.docker_manager = DockerManager(memory_limit=memory_limit, enable_gpu=enable_gpu, gpu_device_ids=gpu_device_ids)
+        self.docker_manager = DockerManager(
+            memory_limit=memory_limit, enable_gpu=enable_gpu, gpu_device_ids=gpu_device_ids
+        )
 
         # 初始化各组件
         self.dataset_generator = DatasetCheckGenerator(self)

@@ -110,7 +110,10 @@ def main():
         try:
             # Create a new DockerCoder instance for each evaluation with its own output directory
             coder = DockerCoder(
-                model=args.llm_model, output_dir=out_dir, memory_limit=args.memory_limit, gpu_device_ids=[3]
+                model=args.llm_model,
+                output_dir=out_dir,
+                memory_limit=args.memory_limit,
+                gpu_device_ids=[3],
             )
             result = coder.evaluate(
                 model_name=model,

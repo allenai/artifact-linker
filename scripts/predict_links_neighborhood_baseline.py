@@ -6,7 +6,7 @@ Uses local neighborhood averaging to predict whether a model-dataset connection 
 
 import json
 import random
-import numpy as np
+
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from tqdm import tqdm
 
@@ -17,49 +17,49 @@ class NeighborhoodBaselinePredictor:
     def __init__(self, G, metric_name="accuracy"):
         self.G = G
         self.metric_name = metric_name
-        
+
     def get_model_neighborhood_features(self, model_name):
         """Get average performance of a model across all its connected datasets."""
         neighbors = list(self.G.neighbors(model_name))
         dataset_neighbors = [n for n in neighbors if self.G.nodes[n].get("type") == "dataset"]
-        
+
         if not dataset_neighbors:
             return 0.0, 0  # No datasets connected
-        
+
         total_performance = 0.0
         valid_connections = 0
-        
+
         for dataset in dataset_neighbors:
             if self.metric_name in self.G[model_name][dataset]:
                 total_performance += self.G[model_name][dataset][self.metric_name]
                 valid_connections += 1
-        
+
         if valid_connections == 0:
             return 0.0, 0
-            
+
         return total_performance / valid_connections, valid_connections
-    
+
     def get_dataset_neighborhood_features(self, dataset_name):
         """Get average performance of a dataset across all its connected models."""
         neighbors = list(self.G.neighbors(dataset_name))
         model_neighbors = [n for n in neighbors if self.G.nodes[n].get("type") == "model"]
-        
+
         if not model_neighbors:
             return 0.0, 0  # No models connected
-        
+
         total_performance = 0.0
         valid_connections = 0
-        
+
         for model in model_neighbors:
             if self.metric_name in self.G[model][dataset_name]:
                 total_performance += self.G[model][dataset_name][self.metric_name]
                 valid_connections += 1
-        
+
         if valid_connections == 0:
             return 0.0, 0
-            
+
         return total_performance / valid_connections, valid_connections
-    
+
     def predict_connection_probability(self, model_name, dataset_name):
         """
         Predict the probability of a connection existing between model and dataset.
@@ -68,49 +68,51 @@ class NeighborhoodBaselinePredictor:
         # Get neighborhood features
         model_avg_perf, model_connections = self.get_model_neighborhood_features(model_name)
         dataset_avg_perf, dataset_connections = self.get_dataset_neighborhood_features(dataset_name)
-        
+
         # If either has no connections, use a low probability
         if model_connections == 0 or dataset_connections == 0:
             return 0.1
-        
+
         # Calculate similarity score based on performance patterns
         # Models and datasets with similar performance patterns are more likely to connect
         performance_similarity = 1.0 / (1.0 + abs(model_avg_perf - dataset_avg_perf))
-        
+
         # Connection density factor (more connections = higher probability)
         model_density = min(model_connections / 10.0, 1.0)  # Normalize to 0-1
         dataset_density = min(dataset_connections / 10.0, 1.0)
-        
+
         # Combine factors
-        connection_prob = (performance_similarity * 0.6 + 
-                          model_density * 0.2 + 
-                          dataset_density * 0.2)
-        
+        connection_prob = performance_similarity * 0.6 + model_density * 0.2 + dataset_density * 0.2
+
         # Ensure probability is between 0 and 1
         return max(0.0, min(1.0, connection_prob))
-    
+
     def predict_batch(self, edge_pairs):
         """Predict connection probabilities for a batch of model-dataset pairs."""
         predictions = []
-        
-        for model_name, dataset_name in tqdm(edge_pairs, desc="Predicting with Neighborhood Baseline"):
+
+        for model_name, dataset_name in tqdm(
+            edge_pairs, desc="Predicting with Neighborhood Baseline"
+        ):
             try:
                 prob = self.predict_connection_probability(model_name, dataset_name)
-                predictions.append({
-                    "prediction": prob > 0.5,  # Binary prediction
-                    "probability": prob,
-                    "reason": f"Neighborhood similarity: model_avg={self.get_model_neighborhood_features(model_name)[0]:.3f}, dataset_avg={self.get_dataset_neighborhood_features(dataset_name)[0]:.3f}"
-                })
+                predictions.append(
+                    {
+                        "prediction": prob > 0.5,  # Binary prediction
+                        "probability": prob,
+                        "reason": f"Neighborhood similarity: model_avg={self.get_model_neighborhood_features(model_name)[0]:.3f}, dataset_avg={self.get_dataset_neighborhood_features(dataset_name)[0]:.3f}",
+                    }
+                )
             except Exception as e:
                 print(f"Error predicting for ({model_name}, {dataset_name}): {e}")
                 predictions.append(None)
-        
+
         return predictions
 
 
 def main():
     metric_name = "accuracy"  # Define the metric to use for neighborhood context
-    output_file = f"output/neighborhood_baseline_predictions.json"
+    output_file = "output/neighborhood_baseline_predictions.json"
 
     # 1. Load the graph from JSON file
     graph_file = "output/perfect_model_dataset_metrics.json"
@@ -123,13 +125,13 @@ def main():
     # 2. Extract positive edges directly from the graph to ensure consistency
     all_models_in_graph = {n for n, d in G.nodes(data=True) if d["type"] == "model"}
     all_datasets_in_graph = {n for n, d in G.nodes(data=True) if d["type"] == "dataset"}
-    
+
     positive_edges = set()
     for u, v in G.edges():
         if u in all_models_in_graph and v in all_datasets_in_graph:
             positive_edges.add((u, v))
         elif v in all_models_in_graph and u in all_datasets_in_graph:
-            positive_edges.add((v, u)) # Ensure correct order
+            positive_edges.add((v, u))  # Ensure correct order
     positive_edges = list(positive_edges)
 
     print(f"Extracted {len(positive_edges)} positive edges from the filtered graph.")
@@ -233,7 +235,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
