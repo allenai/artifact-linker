@@ -5,16 +5,18 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
+from artifact_graph.models.llm_link_predictor import (
+    LLMBinaryLinkPredictor,  # same directory or adjust import
+)
 from artifact_graph.utils.graph_builder import load_artifact_graph_from_json
-from artifact_graph.models.llm_link_predictor import LLMBinaryLinkPredictor  # same directory or adjust import
-
 
 Edge = Tuple[str, str]
+
 
 def _load_summaries(path: Path) -> Dict[str, str]:
     if not path.exists():
@@ -126,12 +128,25 @@ def run(
     out_rows = []
     y_true, y_pred = [], []
     for (m, d), y, obj in zip(edges, labels, pred_objs):
-        row = {"model_id": m, "dataset_id": d, "true_label": y, "predicted_label": None, "reason": "", "status": "Failed"}
+        row = {
+            "model_id": m,
+            "dataset_id": d,
+            "true_label": y,
+            "predicted_label": None,
+            "reason": "",
+            "status": "Failed",
+        }
         if obj and (obj.get("prediction") is not None):
             pred_label = 1 if bool(obj["prediction"]) else 0
             y_true.append(y)
             y_pred.append(pred_label)
-            row.update({"predicted_label": pred_label, "reason": obj.get("reason", ""), "status": "Success"})
+            row.update(
+                {
+                    "predicted_label": pred_label,
+                    "reason": obj.get("reason", ""),
+                    "status": "Success",
+                }
+            )
         out_rows.append(row)
 
     if y_pred:
@@ -154,8 +169,14 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--graph-file", default="output/perfect_model_dataset_metrics.json")
     p.add_argument("--summaries-file", default="output/readme_summaries.json")
-    p.add_argument("--model", choices=["openai/gpt-4o", "openai/o3", "Qwen/Qwen2.5-72B-Instruct-Turbo"], default="Qwen/Qwen2.5-72B-Instruct-Turbo")
-    p.add_argument("--mode", choices=["zero-shot", "simple", "neighborhood"], default="neighborhood")
+    p.add_argument(
+        "--model",
+        choices=["openai/gpt-4o", "openai/o3", "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+        default="Qwen/Qwen2.5-72B-Instruct-Turbo",
+    )
+    p.add_argument(
+        "--mode", choices=["zero-shot", "simple", "neighborhood"], default="neighborhood"
+    )
     p.add_argument("--metric", default="accuracy")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max-pairs", type=int, default=100000)  # cap like your original

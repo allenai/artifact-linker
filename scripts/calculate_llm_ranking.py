@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import math
-import argparse
-from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import pandas as pd
 
 # ---------- I/O ----------
+
 
 def read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
     p = Path(path)
@@ -32,13 +34,17 @@ def read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
             for k in ["data", "rows", "items", "records", "predictions"]:
                 if k in data and isinstance(data[k], list):
                     return data[k]
-            raise ValueError("JSON root is a dict; provide a list or a dict with key 'data'/similar.")
+            raise ValueError(
+                "JSON root is a dict; provide a list or a dict with key 'data'/similar."
+            )
         else:
             raise ValueError("Unsupported JSON structure; expected list or jsonl.")
     else:
         raise ValueError("Unsupported file extension. Use .json or .jsonl")
 
+
 # ---------- Metrics ----------
+
 
 def dcg(relevances: List[float], k: Optional[int] = None, gain: str = "identity") -> float:
     if k is not None:
@@ -46,7 +52,7 @@ def dcg(relevances: List[float], k: Optional[int] = None, gain: str = "identity"
     score = 0.0
     for i, rel in enumerate(relevances):
         if gain == "exp2":
-            gain_val = (2.0 ** rel - 1.0)
+            gain_val = 2.0**rel - 1.0
         elif gain == "identity":
             gain_val = rel
         else:
@@ -54,7 +60,10 @@ def dcg(relevances: List[float], k: Optional[int] = None, gain: str = "identity"
         score += gain_val / math.log2(i + 2.0)
     return score
 
-def ndcg_at_k(true_vals_sorted_by_pred: List[float], k: Optional[int] = None, gain: str = "identity") -> float:
+
+def ndcg_at_k(
+    true_vals_sorted_by_pred: List[float], k: Optional[int] = None, gain: str = "identity"
+) -> float:
     if not true_vals_sorted_by_pred:
         return 0.0
     ideal = sorted(true_vals_sorted_by_pred, reverse=True)
@@ -65,17 +74,20 @@ def ndcg_at_k(true_vals_sorted_by_pred: List[float], k: Optional[int] = None, ga
         return 0.0
     return dcg(true_vals_sorted_by_pred, k=k, gain=gain) / idcg
 
+
 def mrr_top_n(pred_order_ids: List[Any], true_best_ids: List[Any]) -> float:
-    pos = float('inf')
+    pos = float("inf")
     index = {mid: i for i, mid in enumerate(pred_order_ids)}  # 0-based
     for tid in true_best_ids:
         if tid in index:
             pos = min(pos, index[tid] + 1)  # 1-based
-    if pos == float('inf'):
+    if pos == float("inf"):
         return 0.0
     return 1.0 / pos
 
+
 # ---------- Core ----------
+
 
 def autodetect_group_col(rows: List[Dict[str, Any]], fallback_name: str = "ALL") -> Optional[str]:
     """
@@ -93,6 +105,7 @@ def autodetect_group_col(rows: List[Dict[str, Any]], fallback_name: str = "ALL")
         if c in keys:
             return c
     return None  # no grouping column present
+
 
 def compute_per_dataset_metrics(
     rows: List[Dict[str, Any]],
@@ -126,42 +139,56 @@ def compute_per_dataset_metrics(
         true_vals_in_pred_order = [float(x[true_col]) for x in items_sorted_pred]
 
         top_true_sorted = sorted(items, key=lambda x: float(x[true_col]), reverse=True)
-        top_true_ids = [x[id_col] for x in top_true_sorted[:max(1, mrr_topn)]]
+        top_true_ids = [x[id_col] for x in top_true_sorted[: max(1, mrr_topn)]]
 
         nd = ndcg_at_k(true_vals_in_pred_order, k=k, gain=gain)
         mrr = mrr_top_n([x[id_col] for x in items_sorted_pred], top_true_ids)
 
         best_true_id = top_true_ids[0]
-        pred_index = next((i for i, x in enumerate(items_sorted_pred) if x[id_col] == best_true_id), None)
+        pred_index = next(
+            (i for i, x in enumerate(items_sorted_pred) if x[id_col] == best_true_id), None
+        )
         best_true_rank = (pred_index + 1) if pred_index is not None else None
 
-        results.append({
-            (group_col or "group"): ds,
-            "n_items": len(items),
-            f"NDCG@{k if k is not None else 'all'}({gain})": nd,
-            f"MRR@top{mrr_topn}": mrr,
-            "best_true_model": best_true_id,
-            "best_true_pred_rank": best_true_rank,
-        })
+        results.append(
+            {
+                (group_col or "group"): ds,
+                "n_items": len(items),
+                f"NDCG@{k if k is not None else 'all'}({gain})": nd,
+                f"MRR@top{mrr_topn}": mrr,
+                "best_true_model": best_true_id,
+                "best_true_pred_rank": best_true_rank,
+            }
+        )
 
     df = pd.DataFrame(results)
     if not df.empty:
         df = df.sort_values(df.columns[0])
     return df
 
+
 def main():
     ap = argparse.ArgumentParser(description="Compute NDCG/MRR per dataset and macro average.")
     ap.add_argument("--input", required=True, help="Path to input .json or .jsonl file.")
-    ap.add_argument("--group-col", default="auto",
-                    help="Grouping column (e.g., dataset_id). Use 'auto' (default) to autodetect; use '' to treat all as one group.")
+    ap.add_argument(
+        "--group-col",
+        default="auto",
+        help="Grouping column (e.g., dataset_id). Use 'auto' (default) to autodetect; use '' to treat all as one group.",
+    )
     ap.add_argument("--id-col", default="model_id")
     ap.add_argument("--true-col", default="true_metric")
     ap.add_argument("--pred-col", default="predicted_metric")
     ap.add_argument("--k", type=int, default=None, help="Cutoff for NDCG@k (default: all).")
     ap.add_argument("--gain", choices=["identity", "exp2"], default="identity")
     ap.add_argument("--mrr-topn", type=int, default=1)
-    ap.add_argument("--out", default="per_dataset_metrics.csv", help="Per-dataset CSV output (ignored if --macro-only).")
-    ap.add_argument("--macro-only", action="store_true", help="Only print macro averages (no per-dataset CSV).")
+    ap.add_argument(
+        "--out",
+        default="per_dataset_metrics.csv",
+        help="Per-dataset CSV output (ignored if --macro-only).",
+    )
+    ap.add_argument(
+        "--macro-only", action="store_true", help="Only print macro averages (no per-dataset CSV)."
+    )
     args = ap.parse_args()
 
     rows = read_json_or_jsonl(args.input)
@@ -211,6 +238,7 @@ def main():
                 print(f"  {k}: {v:.6f}")
         else:
             print("  (no data)")
+
 
 if __name__ == "__main__":
     main()

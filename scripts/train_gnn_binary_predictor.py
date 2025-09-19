@@ -5,9 +5,8 @@ import random
 
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
-import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from torch.optim import AdamW
 
 from artifact_graph.models.gnn_link_predictor import GNNBinaryLinkPredictor
 from artifact_graph.utils.graph_builder import (
@@ -37,7 +36,9 @@ class GNNBinaryTrainer:
 
             # Forward pass
             node_embeddings = self.model(data.x.to(self.device), data.edge_index.to(self.device))
-            preds = self.model.predict_link_probability(node_embeddings, batch_edges.to(self.device))
+            preds = self.model.predict_link_probability(
+                node_embeddings, batch_edges.to(self.device)
+            )
 
             # Compute loss
             loss = self.loss_fn(preds, batch_labels.to(self.device))
@@ -97,26 +98,31 @@ def main():
     all_models = [i for i, node_type in enumerate(data.node_type) if node_type == 0]
     all_datasets = [i for i, node_type in enumerate(data.node_type) if node_type == 1]
     existing_edges_set = set(map(tuple, positive_edges.t().tolist()))
-    
+
     negative_edges = []
     num_negative_samples = positive_edges.size(1)  # 1:1 ratio
-    
+
     print(f"Generating {num_negative_samples} negative samples...")
     while len(negative_edges) < num_negative_samples:
         model_idx = random.choice(all_models)
         dataset_idx = random.choice(all_datasets)
-        if (model_idx, dataset_idx) not in existing_edges_set and (dataset_idx, model_idx) not in existing_edges_set:
+        if (model_idx, dataset_idx) not in existing_edges_set and (
+            dataset_idx,
+            model_idx,
+        ) not in existing_edges_set:
             negative_edges.append([model_idx, dataset_idx])
-    
+
     negative_edges = torch.tensor(negative_edges).t()
     print("Negative sampling complete.")
 
     # 6. Combine positive and negative edges
     all_edges = torch.cat([positive_edges, negative_edges], dim=1)
-    all_labels = torch.cat([
-        torch.ones(positive_edges.size(1)),  # Positive labels
-        torch.zeros(negative_edges.size(1))  # Negative labels
-    ])
+    all_labels = torch.cat(
+        [
+            torch.ones(positive_edges.size(1)),  # Positive labels
+            torch.zeros(negative_edges.size(1)),  # Negative labels
+        ]
+    )
 
     # 7. Shuffle the data
     perm = torch.randperm(all_edges.size(1))
@@ -139,15 +145,15 @@ def main():
         val_size = int(0.15 * all_edges.size(1))
 
         train_edges = all_edges[:, :train_size]
-        val_edges = all_edges[:, train_size:train_size + val_size]
-        test_edges = all_edges[:, train_size + val_size:]
+        val_edges = all_edges[:, train_size : train_size + val_size]
+        test_edges = all_edges[:, train_size + val_size :]
 
         train_labels = all_labels[:train_size]
-        val_labels = all_labels[train_size:train_size + val_size]
-        test_labels = all_labels[train_size + val_size:]
+        val_labels = all_labels[train_size : train_size + val_size]
+        test_labels = all_labels[train_size + val_size :]
 
         # Print test set info
-        print(f"\n--- Test Set Info ---")
+        print("\n--- Test Set Info ---")
         print(f"Test edges: {test_edges.size(1)}")
         print(f"Positive test edges: {test_labels.sum().item()}")
         print(f"Negative test edges: {(test_labels == 0).sum().item()}")
@@ -170,7 +176,7 @@ def main():
         recall = recall_score(true_labels, predicted_labels)
         f1 = f1_score(true_labels, predicted_labels)
 
-        print(f"\n--- Binary Classification Metrics ---")
+        print("\n--- Binary Classification Metrics ---")
         print(f"Accuracy:  {accuracy:.4f}")
         print(f"Precision: {precision:.4f}")
         print(f"Recall:    {recall:.4f}")
@@ -180,7 +186,7 @@ def main():
         # 11. Save results
         results_to_save = []
         node_names = data.node_names_ordered
-        
+
         for i in range(test_edges.size(1)):
             src_idx = test_edges[0, i].item()
             dst_idx = test_edges[1, i].item()
@@ -188,16 +194,18 @@ def main():
             dst_name = node_names[dst_idx]
             model_name = src_name if data.node_type[src_idx] == 0 else dst_name
             dataset_name = dst_name if data.node_type[src_idx] == 0 else src_name
-            
-            results_to_save.append({
-                "model_id": model_name,
-                "dataset_id": dataset_name,
-                "true_label": int(true_labels[i]),
-                "predicted_label": int(predicted_labels[i]),
-                "predicted_probability": float(predicted_probs[i]),
-                "reason": "Predicted by GNN Binary Classifier",
-                "status": "Success",
-            })
+
+            results_to_save.append(
+                {
+                    "model_id": model_name,
+                    "dataset_id": dataset_name,
+                    "true_label": int(true_labels[i]),
+                    "predicted_label": int(predicted_labels[i]),
+                    "predicted_probability": float(predicted_probs[i]),
+                    "reason": "Predicted by GNN Binary Classifier",
+                    "status": "Success",
+                }
+            )
 
         output_file = "output/gnn_binary_predictions.json"
         with open(output_file, "w") as f:

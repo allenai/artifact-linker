@@ -47,10 +47,10 @@ class GNNBinaryLinkPredictor(nn.Module):
 
         # MLP for binary edge prediction
         self.edge_predictor = nn.Sequential(
-            nn.Linear(hidden_feats * 2, hidden_feats), 
-            nn.ReLU(), 
+            nn.Linear(hidden_feats * 2, hidden_feats),
+            nn.ReLU(),
             nn.Linear(hidden_feats, 1),
-            nn.Sigmoid()  # Output probability between 0 and 1
+            nn.Sigmoid(),  # Output probability between 0 and 1
         )
 
     def forward(self, x, edge_index):

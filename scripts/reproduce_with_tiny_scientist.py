@@ -1,16 +1,37 @@
 import argparse
+
 from tiny_scientist import TinyScientist
+
 
 def main():
     """
     This script uses TinyScientist to automate the process of reproducing
     a model evaluation on a given dataset for a specific task.
     """
-    parser = argparse.ArgumentParser(description="Reproduce a model evaluation using TinyScientist.")
-    parser.add_argument("--model", type=str, required=True, help="The Hugging Face model name (e.g., 'dslim/bert-base-NER').")
-    parser.add_argument("--dataset", type=str, required=True, help="The Hugging Face dataset name (e.g., 'eriktks/conll2003').")
-    parser.add_argument("--task", type=str, required=True, help="The task to perform (e.g., 'Named Entity Recognition', 'Text Classification', 'Summarization').")
-    parser.add_argument("--gpt_model", type=str, default="gpt-4o", help="The GPT model to use for TinyScientist.")
+    parser = argparse.ArgumentParser(
+        description="Reproduce a model evaluation using TinyScientist."
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="The Hugging Face model name (e.g., 'dslim/bert-base-NER').",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="The Hugging Face dataset name (e.g., 'eriktks/conll2003').",
+    )
+    parser.add_argument(
+        "--task",
+        type=str,
+        required=True,
+        help="The task to perform (e.g., 'Named Entity Recognition', 'Text Classification', 'Summarization').",
+    )
+    parser.add_argument(
+        "--gpt_model", type=str, default="gpt-4o", help="The GPT model to use for TinyScientist."
+    )
 
     args = parser.parse_args()
 
@@ -29,7 +50,7 @@ def main():
         f"The script should load the model and dataset, run the evaluation, "
         f"and report the standard evaluation metrics for this task."
     )
-    
+
     print(f"🔬 Intent: {intent}")
 
     # Step 1: Generate a json-format research idea/plan
@@ -44,11 +65,11 @@ def main():
     # Step 2: Generate and run the experiment code
     print("\nStep 2: Generating and running experiment code...")
     status, experiment_dir = scientist.code(idea=idea)
-    
+
     # If the experiments run successfully, proceed to writing the paper
     if status is True:
         print(f"✅ Experiments completed successfully. Results are in: {experiment_dir}")
-        
+
         # Step 3: Write a research paper based on the findings
         print("\nStep 3: Writing a research paper...")
         pdf_path = scientist.write(idea=idea, experiment_dir=experiment_dir)
@@ -66,6 +87,7 @@ def main():
         print("--------------------")
     else:
         print(f"❌ Experiments failed. Check the logs in the experiment directory: {experiment_dir}")
+
 
 if __name__ == "__main__":
     main()
