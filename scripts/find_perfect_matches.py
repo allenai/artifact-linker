@@ -7,6 +7,8 @@ import json
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from rapidfuzz import fuzz
+
 
 def load_metric_pairings(file_path: str) -> Dict[str, Any]:
     try:
@@ -22,9 +24,24 @@ def load_metric_pairings(file_path: str) -> Dict[str, Any]:
 
 def has_perfect_fuzzy_match(pairing: Dict[str, Any]) -> bool:
     """Check if there exists a fuzzy match with score==100"""
+    target_name = pairing.get("raw_llm_output", {}).get("dataset")
+    if not target_name:
+        return False
+
     for m in pairing.get("top_fuzzy_matches", []):
-        if isinstance(m, dict) and float(m.get("score", 0)) == 100.0:
-            return True
+        if isinstance(m, dict):
+            candidate_name = m.get("match")
+            if '/' in candidate_name:
+                candidate_name = candidate_name.split('/')[-1]
+            if candidate_name:
+                # Recalculate score to ensure accuracy
+                if fuzz.ratio(target_name.lower(), candidate_name.lower()) == 100.0:
+                    # should setup best_match with the candidate_name
+                    pairing["best_match"] = {
+                        "match": candidate_name,
+                        "ids": m.get("ids", []),
+                    }
+                    return True
     return False
 
 
@@ -77,7 +94,7 @@ def get_model_downloads(model_id: str, model_downloads_map: Dict[str, int]) -> i
 
 
 def extract_model_dataset_metrics(
-    data: Dict[str, Any], min_downloads: int = 100, model_downloads_map: Dict[str, int] = None
+    data: Dict[str, Any], min_downloads: int = 1, model_downloads_map: Dict[str, int] = None
 ) -> List[Dict[str, Any]]:
     """
     Return list: each unique model-dataset pair -> {model_id, model_downloads, dataset_id, dataset_downloads, metrics}
@@ -91,9 +108,12 @@ def extract_model_dataset_metrics(
     # Use (model_id, dataset_id) as key to deduplicate same name combinations
     pair_best: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
+    cnt = 0
     for pairing in data.get("pairings", []):
         if not has_perfect_fuzzy_match(pairing):
             continue
+
+        cnt += 1
 
         model_id = pairing.get("model_id", "Unknown")
 
@@ -123,6 +143,8 @@ def extract_model_dataset_metrics(
                 "total_downloads": total_downloads,
                 "metrics": metrics,
             }
+
+    print(f"Total pairings: {cnt}")
 
     # Remove the total_downloads field from final results
     results = []
@@ -159,7 +181,7 @@ def main():
     parser.add_argument(
         "-o",
         "--output",
-        default="output/perfect_model_dataset_metrics.json",
+        default="output/perfect_model_dataset_metrics_1125.json",
         help="Output file path",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Print detailed results")

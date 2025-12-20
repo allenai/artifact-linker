@@ -1,122 +1,129 @@
 from __future__ import annotations
 
-from tqdm import tqdm
+import networkx as nx
 
 from artifact_graph.utils.llm_client import call_llm
 from artifact_graph.utils.llm_response_parser import parse_llm_response_to_json
 
 
 class LLMLinkPredictor:
-    """Binary link predictor using LLM."""
-
-    def __init__(self, model_name="openai/gpt-3.5-turbo"):
+    def __init__(
+        self, model_name="openai/gpt-3.5-turbo", hop_number: int = 1, use_info: bool = True
+    ):
         self.model_name = model_name
+        self.hop_number = hop_number
+        self.use_info = use_info
 
     def predict(
         self,
-        edge_pairs,
-        G=None,
-        mode="simple",
-        summaries: dict | None = None,
+        model_id: int,
+        dataset_id: int,
+        G: nx.Graph,
+        node_metadata: dict,
     ):
-        """Predict links between model-dataset pairs."""
-        if mode == "neighborhood" and not G:
-            raise ValueError("A graph G must be provided for 'neighborhood' mode.")
+        """Predict whether a single model should be evaluated on a single dataset."""
+        node_metadata = node_metadata or {}
 
-        summaries = summaries or {}
-        if not summaries:
-            print("Warning: No summaries provided. Proceeding without README summaries.")
+        try:
+            model_name = node_metadata.get(model_id, {}).get("name")
+            dataset_name = node_metadata.get(dataset_id, {}).get("name")
 
-        results = []
-        for model_name, dataset_name in tqdm(edge_pairs, desc="Predicting Links"):
-            try:
-                model_card = summaries.get("models", {}).get(model_name, {}).get("model_info")
-                if not model_card:
-                    print(f"Warning: Could not find summary for model {model_name}")
+            model_info = node_metadata.get(model_id, {}).get("info")
+            dataset_info = node_metadata.get(dataset_id, {}).get("info")
 
-                dataset_card = summaries.get("datasets", {}).get(dataset_name, {}).get("model_info")
-                if not dataset_card:
-                    print(f"Warning: Could not find summary for dataset {dataset_name}")
-
-                model_neighbors = None
-                dataset_neighbors = None
-                if mode == "neighborhood" and G:
-                    model_neighbors = []
-                    for neighbor in G.neighbors(model_name):
-                        if neighbor != dataset_name and G.nodes[neighbor].get("type") == "dataset":
-                            model_neighbors.append(neighbor)
-
-                    dataset_neighbors = []
-                    for neighbor in G.neighbors(dataset_name):
-                        if neighbor != model_name and G.nodes[neighbor].get("type") == "model":
-                            dataset_neighbors.append(neighbor)
-
-                prompt = self._build_prompt(
-                    model_name=model_name,
-                    dataset_name=dataset_name,
-                    model_card=model_card,
-                    dataset_card=dataset_card,
-                    model_neighbors=model_neighbors,
-                    dataset_neighbors=dataset_neighbors,
-                    mode=mode,
+            model_neighbor_names = []
+            dataset_neighbor_names = []
+            model_neighbor_infos = []
+            dataset_neighbor_infos = []
+            if self.hop_number > 0 and G:
+                # Get model's k-hop neighbors
+                UG = G.to_undirected()
+                neighbor_ids_1 = list(
+                    nx.single_source_shortest_path_length(
+                        UG, model_id, cutoff=self.hop_number
+                    ).keys()
                 )
+                neighbor_ids_2 = list(
+                    nx.single_source_shortest_path_length(
+                        UG, dataset_id, cutoff=self.hop_number
+                    ).keys()
+                )
+                neighbor_ids = set(neighbor_ids_1 + neighbor_ids_2)
+                for neighbor_id in neighbor_ids:
+                    if neighbor_id == model_id or neighbor_id == dataset_id:
+                        continue
+                    if node_metadata.get(neighbor_id, {}).get("type") == "dataset":
+                        dataset_neighbor_names.append(
+                            node_metadata.get(neighbor_id, {}).get("name")
+                        )
+                        dataset_neighbor_infos.append(
+                            node_metadata.get(neighbor_id, {}).get("info")
+                        )
+                    if node_metadata.get(neighbor_id, {}).get("type") == "model":
+                        model_neighbor_names.append(node_metadata.get(neighbor_id, {}).get("name"))
+                        model_neighbor_infos.append(node_metadata.get(neighbor_id, {}).get("info"))
 
-                messages = [{"role": "user", "content": prompt}]
-                response = call_llm(messages, model=self.model_name, agent_name="link_predictor")
+            prompt = self._build_prompt(
+                model_name=model_name,
+                dataset_name=dataset_name,
+                model_info=model_info,
+                dataset_info=dataset_info,
+                model_neighbor_names=model_neighbor_names,
+                dataset_neighbor_names=dataset_neighbor_names,
+                model_neighbor_infos=model_neighbor_infos,
+                dataset_neighbor_infos=dataset_neighbor_infos,
+            )
 
-                if not response["success"]:
-                    print(
-                        f"Warning: LLM call failed for ({model_name}, {dataset_name}). Error: {response.get('error')}"
-                    )
-                    prediction_result = None
-                else:
-                    answer = response["content"].strip()
-                    prediction_result = self._parse_llm_answer(answer, model_name, dataset_name)
+            breakpoint()
+            messages = [{"role": "user", "content": prompt}]
+            response = call_llm(messages, model=self.model_name, agent_name="link_predictor")
 
-                results.append(prediction_result)
+            if not response["success"]:
+                print(
+                    f"Warning: LLM call failed for ({model_name}, {dataset_name}). Error: {response.get('error')}"
+                )
+                return None
+            else:
+                answer = response["content"].strip()
+                return self._parse_llm_answer(answer, model_name, dataset_name)
 
-            except Exception as e:
-                print(f"Error predicting for ({model_name}, {dataset_name}): {e}")
-                results.append(None)
-
-        return results
+        except Exception as e:
+            print(f"Error predicting for ({model_id}, {dataset_id}): {e}")
+            return None
 
     def _build_prompt(
         self,
         model_name,
         dataset_name,
-        model_card=None,
-        dataset_card=None,
-        model_neighbors=None,
-        dataset_neighbors=None,
-        mode="simple",
-        metric_name=None,
+        model_info=None,
+        dataset_info=None,
+        model_neighbor_names=None,
+        dataset_neighbor_names=None,
+        model_neighbor_infos=None,
+        dataset_neighbor_infos=None,
     ):
-        prediction_instruction = "Please predict whether this model and dataset are connected (i.e., the model is evaluated on the dataset). Provide your answer as a JSON object with two keys: 'prediction' (a boolean, true or false) and 'reason' (a brief explanation of your reasoning)."
+        prediction_instruction = "Please predict whether this model should be evaluated on this dataset. Provide your answer as a JSON object with two keys: 'prediction' (a boolean, true or false) and 'reason' (a brief explanation of your reasoning)."
 
-        prompt = f"Given a machine learning model named '{model_name}' and a dataset named '{dataset_name}'"
+        prompt = f"Given a machine learning model named '{model_name}' and a dataset named '{dataset_name}'."
 
-        if mode != "zero-shot":
-            if model_card:
-                prompt += f"\nModel card: {model_card}"
-            if dataset_card:
-                prompt += f"\nDataset card: {dataset_card}"
+        if self.use_info:
+            if model_info:
+                prompt += f"\n\nMore information about this model: {model_info}"
+            if dataset_info:
+                prompt += f"\n\nMore information about this dataset: {dataset_info}"
 
-        if mode == "neighborhood":
-            prompt += "\nThe model is also connected to the following datasets:\n"
-            if model_neighbors:
-                for ds in model_neighbors:
-                    prompt += f"- {ds}\n"
-            else:
-                prompt += "- (no other datasets)\n"
-            prompt += "The dataset is also connected to the following models:\n"
-            if dataset_neighbors:
-                for mdl in dataset_neighbors:
-                    prompt += f"- {mdl}\n"
-            else:
-                prompt += "- (no other models)\n"
+        if model_neighbor_names and model_neighbor_infos:
+            prompt += "\n\n\nThere are other models that are evaluated on the dataset to judge whether the model and dataset are connected:\n"
+            for mdl, info in zip(model_neighbor_names, model_neighbor_infos):
+                prompt += f"- {mdl}: {info}\n"
 
-        prompt += f"\n{prediction_instruction}"
+        if dataset_neighbor_names and dataset_neighbor_infos:
+            prompt += "\n\n\nThere are other datasets that are evaluated on the model to judge whether the model and dataset are connected:\n"
+            for ds, info in zip(dataset_neighbor_names, dataset_neighbor_infos):
+                prompt += f"- {ds}: {info}\n"
+
+        prompt += f"\n\n\n{prediction_instruction}"
+        breakpoint()
         return prompt
 
     def _parse_llm_answer(self, answer, model_name, dataset_name):

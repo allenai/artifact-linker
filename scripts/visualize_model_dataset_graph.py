@@ -1,299 +1,220 @@
 #!/usr/bin/env python3
 """
-Visualize model-dataset relationship graph from perfect_model_dataset_metrics.json
-
-Usage:
-    python visualize_model_dataset_graph.py [json_file_path] [output_file_path]
-    python visualize_model_dataset_graph.py --help
-
-Examples:
-    # Basic usage with default filtering
-    python visualize_model_dataset_graph.py perfect_model_dataset_metrics.json graph.html
-
-    # No filtering (show all nodes)
-    python visualize_model_dataset_graph.py perfect_model_dataset_metrics.json graph.html --no-filter
-
-    # Custom filtering
-    python visualize_model_dataset_graph.py perfect_model_dataset_metrics.json graph.html --min-downloads 5000 --max-nodes 200
+可视化模型-数据集图的脚本
+直接调用 artifact_graph.utils.graph_visualizer 中的现有函数
 """
 
 import argparse
-import json
-import os
-import sys
+from collections import Counter, defaultdict
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import networkx as nx
 
-# Add parent directory to path to import graph_visualizer
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
+from artifact_graph.utils.graph_builder import load_nx_graph
 from artifact_graph.utils.graph_visualizer import (
-    DATASET,
-    MODEL,
     visualize_graph_interactive,
+    visualize_graph_networkx,
 )
 
 
-def load_model_dataset_data(json_path):
-    """Load JSON data"""
-    if not os.path.exists(json_path):
-        print(f"❌ File not found: {json_path}")
-        return None
-
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    return data.get("results", [])
-
-
-def create_model_dataset_graph(results, min_downloads=None, max_nodes=None):
+def create_display_graph(G, node_metadata, max_nodes: int = 1000):
     """
-    Create model-dataset bipartite graph from results data
-
-    Args:
-        results: List of JSON results
-        min_downloads: Minimum download threshold for filtering
-        max_nodes: Maximum number of nodes limit (for large datasets)
+    创建用于显示的图，将整数ID转换为可读的名称
+    并可选地进行节点采样以提高可视化性能
     """
-    G = nx.Graph()
+    # 如果节点太多，进行采样
+    if len(G.nodes()) > max_nodes:
+        print(f"图包含 {len(G.nodes())} 个节点，为了可视化性能，采样 {max_nodes} 个节点")
+        degrees = dict(G.degree())
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:max_nodes]
+        G_sub = G.subgraph(top_nodes).copy()
+    else:
+        G_sub = G.copy()
 
-    # Statistics
-    model_downloads = {}
-    dataset_downloads = {}
-    connections = []
+    # 创建一个新图，使用可读的节点名称
+    G_display = nx.Graph()
 
-    # Collect all connections and download data
-    for result in results:
-        model_id = result.get("model_id", "")
-        dataset_id = result.get("dataset_id", "")
-        model_dl = result.get("model_downloads", 0)
-        dataset_dl = result.get("dataset_downloads", 0)
+    # 添加节点（使用名称作为节点ID）
+    for node_id in G_sub.nodes():
+        node_data = node_metadata[node_id]
+        name = node_data.get("name", f"Node_{node_id}")
+        # 截断长名称以提高可读性
+        display_name = name[:30] + "..." if len(name) > 30 else name
 
-        if model_id and dataset_id:
-            # Record download counts
-            model_downloads[model_id] = model_dl
-            dataset_downloads[dataset_id] = dataset_dl
+        G_display.add_node(
+            display_name,
+            type=node_data["type"],
+            downloads=node_data.get("downloads", 0),
+            original_id=node_id,
+        )
 
-            # Record connections
-            connections.append((model_id, dataset_id, model_dl, dataset_dl))
+    # 添加边
+    id_to_name = {}
+    for node_id in G_sub.nodes():
+        node_data = node_metadata[node_id]
+        name = node_data.get("name", f"Node_{node_id}")
+        display_name = name[:30] + "..." if len(name) > 30 else name
+        id_to_name[node_id] = display_name
 
-    # Apply filtering conditions
-    if min_downloads:
-        connections = [
-            (m, d, mdl, ddl)
-            for m, d, mdl, ddl in connections
-            if mdl >= min_downloads or ddl >= min_downloads
-        ]
+    for u, v in G_sub.edges():
+        u_name = id_to_name[u]
+        v_name = id_to_name[v]
+        G_display.add_edge(u_name, v_name)
 
-    # Limit number of nodes (select highest download counts)
-    if max_nodes and len(connections) > max_nodes:
-        # Sort by total download count
-        connections.sort(key=lambda x: x[2] + x[3], reverse=True)
-        connections = connections[:max_nodes]
-
-    # Build graph
-    models_added = set()
-    datasets_added = set()
-
-    for model_id, dataset_id, model_dl, dataset_dl in connections:
-        # Add model node
-        if model_id not in models_added:
-            G.add_node(model_id, type=MODEL, downloads=model_dl)
-            models_added.add(model_id)
-
-        # Add dataset node
-        if dataset_id not in datasets_added:
-            G.add_node(dataset_id, type=DATASET, downloads=dataset_dl)
-            datasets_added.add(dataset_id)
-
-        # Add edge
-        G.add_edge(model_id, dataset_id)
-
-    print("📊 Graph statistics:")
-    print(f"  Total nodes: {G.number_of_nodes()}")
-    print(f"  - Models: {len(models_added)}")
-    print(f"  - Datasets: {len(datasets_added)}")
-    print(f"  Total edges: {G.number_of_edges()}")
-
-    return G
+    print(f"创建了用于显示的图：{G_display.number_of_nodes()} 个节点，{G_display.number_of_edges()} 条边")
+    return G_display
 
 
-def extract_largest_component(G):
-    """
-    Extract the largest connected component from the graph
+def plot_basic_statistics(node_metadata, edges, output_dir: str = "output/visualizations"):
+    """绘制基本统计图表"""
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True, parents=True)
 
-    Args:
-        G: NetworkX graph
+    # 统计节点类型
+    node_types = [data["type"] for data in node_metadata.values()]
+    type_counts = Counter(node_types)
 
-    Returns:
-        NetworkX graph containing only the largest connected component
-    """
-    if G.number_of_nodes() == 0:
-        return G
+    # 统计下载量分布
+    model_downloads = [
+        data["downloads"] for data in node_metadata.values() if data["type"] == "model"
+    ]
+    dataset_downloads = [
+        data["downloads"] for data in node_metadata.values() if data["type"] == "dataset"
+    ]
 
-    # Get all connected components
-    connected_components = list(nx.connected_components(G))
+    # 统计度分布
+    node_degrees = defaultdict(int)
+    for edge in edges:
+        u, v = int(edge[0]), int(edge[1])
+        node_degrees[u] += 1
+        node_degrees[v] += 1
 
-    if not connected_components:
-        return G
+    degree_dist = Counter(node_degrees.values())
 
-    # Find the largest component
-    largest_component = max(connected_components, key=len)
+    # 创建子图
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle("Model-Dataset Graph Statistics", fontsize=16)
 
-    # Create subgraph with only the largest component
-    largest_subgraph = G.subgraph(largest_component).copy()
+    # 1. 节点类型分布
+    axes[0, 0].pie(type_counts.values(), labels=type_counts.keys(), autopct="%1.1f%%")
+    axes[0, 0].set_title("Node Type Distribution")
 
-    # Print component statistics
-    print("🔗 Connected component analysis:")
-    print(f"  Total components: {len(connected_components)}")
-    print(f"  Largest component size: {len(largest_component)} nodes")
+    # 2. 模型下载量分布
+    axes[0, 1].hist(model_downloads, bins=50, alpha=0.7, color="blue")
+    axes[0, 1].set_xlabel("Downloads")
+    axes[0, 1].set_ylabel("Count")
+    axes[0, 1].set_title("Model Downloads Distribution")
+    axes[0, 1].set_yscale("log")
 
-    if len(connected_components) > 1:
-        component_sizes = sorted([len(cc) for cc in connected_components], reverse=True)
-        print(f"  Component sizes: {component_sizes[:10]}...")  # Show top 10
+    # 3. 数据集下载量分布
+    axes[1, 0].hist(dataset_downloads, bins=50, alpha=0.7, color="green")
+    axes[1, 0].set_xlabel("Downloads")
+    axes[1, 0].set_ylabel("Count")
+    axes[1, 0].set_title("Dataset Downloads Distribution")
+    axes[1, 0].set_yscale("log")
 
-        # Calculate what percentage of nodes are in the largest component
-        percentage = (len(largest_component) / G.number_of_nodes()) * 100
-        print(f"  Largest component coverage: {percentage:.1f}% of all nodes")
+    # 4. 度分布
+    degrees = list(degree_dist.keys())
+    counts = list(degree_dist.values())
+    axes[1, 1].loglog(degrees, counts, "bo-", alpha=0.7)
+    axes[1, 1].set_xlabel("Degree")
+    axes[1, 1].set_ylabel("Count")
+    axes[1, 1].set_title("Degree Distribution (Log-Log)")
+    axes[1, 1].grid(True, alpha=0.3)
 
-    # Show node type breakdown for largest component
-    model_nodes = [n for n in largest_component if G.nodes[n].get("type") == MODEL]
-    dataset_nodes = [n for n in largest_component if G.nodes[n].get("type") == DATASET]
+    plt.tight_layout()
+    plt.savefig(output_path / "graph_statistics.png", dpi=300, bbox_inches="tight")
+    print(f"Saved statistics to {output_path}/graph_statistics.png")
 
-    print("  Largest component composition:")
-    print(f"  - Models: {len(model_nodes)}")
-    print(f"  - Datasets: {len(dataset_nodes)}")
-    print(f"  - Edges: {largest_subgraph.number_of_edges()}")
+    return fig
 
-    return largest_subgraph
+
+def create_network_visualizations(G_display, output_dir: str = "output/visualizations"):
+    """创建网络可视化，调用现有的可视化函数"""
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True, parents=True)
+
+    # 1. 创建静态网络图（使用 artifact_graph 的 visualize_graph_networkx）
+    static_output = output_path / "network_layout.png"
+    print("创建静态网络布局图...")
+    visualize_graph_networkx(
+        G_display,
+        output_file=str(static_output),
+        layout="spring",
+        figsize=(16, 12),
+        node_size_scale=200,
+        show_labels=True,
+        label_font_size=8,
+        title="Model-Dataset Graph Network Layout",
+        dpi=300,
+    )
+    print(f"静态网络图已保存到 {static_output}")
+
+    # 2. 创建交互式图（使用 artifact_graph 的 visualize_graph_interactive）
+    try:
+        interactive_output = output_path / "interactive_graph.html"
+        print("创建交互式网络图...")
+        visualize_graph_interactive(G_display, str(interactive_output))
+        print(f"交互式网络图已保存到 {interactive_output}")
+    except Exception as e:
+        print(f"交互式可视化失败: {e}")
+        print("请确保已安装 pyvis: pip install pyvis")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Visualize model-dataset relationship graph",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Basic usage
-  %(prog)s data.json output.html
-
-  # Only visualize the largest connected component
-  %(prog)s data.json output.html --largest-component
-
-  # Custom filtering with largest component
-  %(prog)s data.json output.html --min-downloads 5000 --largest-component
-
-  # No filtering but only largest component
-  %(prog)s data.json output.html --no-filter --largest-component
-        """,
-    )
-
-    parser.add_argument(
-        "json_path",
-        nargs="?",
-        default="perfect_model_dataset_metrics.json",
-        help="Path to JSON data file (default: perfect_model_dataset_metrics.json)",
-    )
-
-    parser.add_argument(
-        "output_file",
-        nargs="?",
-        default="model_dataset_graph.html",
-        help="Output HTML file path (default: model_dataset_graph.html)",
-    )
-
-    parser.add_argument(
-        "--min-downloads", type=int, help="Minimum download count threshold for filtering"
-    )
-
-    parser.add_argument("--max-nodes", type=int, help="Maximum number of nodes to display")
-
-    parser.add_argument(
-        "--no-filter", action="store_true", help="Disable automatic filtering for large datasets"
-    )
-
-    parser.add_argument(
-        "--largest-component",
-        action="store_true",
-        help="Only visualize the largest connected component",
-    )
+    parser = argparse.ArgumentParser(description="可视化模型-数据集图")
+    parser.add_argument("--graph-data-dir", default="output/artifact_graph_data", help="图数据目录")
+    parser.add_argument("--output-dir", default="output/visualizations", help="可视化输出目录")
+    parser.add_argument("--max-nodes", type=int, default=3000, help="网络可视化中显示的最大节点数")
+    parser.add_argument("--skip-stats", action="store_true", help="跳过统计图表生成")
+    parser.add_argument("--skip-interactive", action="store_true", help="跳过交互式可视化")
 
     args = parser.parse_args()
 
-    # Convert to absolute paths
-    json_path = args.json_path
-    output_file = args.output_file
+    try:
+        # 使用 artifact_graph 的 load_nx_graph 函数加载数据
+        print("正在加载图数据...")
+        G, node_metadata, edge_metadata = load_nx_graph(args.graph_data_dir)
 
-    if not os.path.isabs(json_path):
-        json_path = os.path.join(os.getcwd(), json_path)
-    if not os.path.isabs(output_file):
-        output_file = os.path.join(os.getcwd(), output_file)
+        print(f"成功加载图：{G.number_of_nodes()} 个节点，{G.number_of_edges()} 条边")
 
-    print(f"📁 Loading data: {json_path}")
-    print(f"📄 Output file: {output_file}")
-    print("=" * 80)
+        # 创建输出目录
+        output_path = Path(args.output_dir)
+        output_path.mkdir(exist_ok=True, parents=True)
 
-    # Load data
-    results = load_model_dataset_data(json_path)
-    if not results:
-        print("❌ Failed to load data")
-        return
+        # 1. 基本统计图表（可选）
+        if not args.skip_stats:
+            print("正在生成基本统计图表...")
+            # 需要构造 edges 数组用于统计
+            edges = [[u, v] for u, v in G.edges()]
+            plot_basic_statistics(node_metadata, edges, args.output_dir)
 
-    print(f"📊 Total results: {len(results)}")
+        # 2. 创建用于显示的图（将整数ID转换为可读名称）
+        print("正在准备显示图...")
+        G_display = create_display_graph(G, node_metadata, args.max_nodes)
 
-    # Determine filtering parameters
-    min_downloads = args.min_downloads
-    max_nodes = args.max_nodes
+        # 3. 网络可视化（静态和交互式）
+        print("正在创建网络可视化...")
+        create_network_visualizations(G_display, args.output_dir)
 
-    # Apply automatic filtering for large datasets if not disabled
-    if not args.no_filter and len(results) > 1000:
-        if min_downloads is None:
-            min_downloads = 1000
-        if max_nodes is None:
-            max_nodes = 50000
-        print("⚠️  Dataset is large, applying automatic filtering...")
-        print(f"   - Minimum downloads: {min_downloads}")
-        print(f"   - Maximum nodes: {max_nodes}")
-        print("   - Use --no-filter to disable automatic filtering")
-    elif args.no_filter:
-        print("🔓 Filtering disabled - showing all nodes")
+        print(f"\n✅ 可视化完成！请查看 {args.output_dir} 目录")
+        print("生成的文件:")
+        if not args.skip_stats:
+            print("  - graph_statistics.png: 基本统计图表")
+        print("  - network_layout.png: 静态网络布局图")
+        if not args.skip_interactive:
+            print("  - interactive_graph.html: 交互式网络图")
 
-    if min_downloads or max_nodes:
-        print("🔽 Filtering enabled:")
-        if min_downloads:
-            print(f"   - Minimum downloads: {min_downloads}")
-        if max_nodes:
-            print(f"   - Maximum nodes: {max_nodes}")
+    except Exception as e:
+        print(f"❌ 可视化过程中出现错误: {e}")
+        import traceback
 
-    if args.largest_component:
-        print("🔗 Largest component mode enabled")
+        traceback.print_exc()
+        return 1
 
-    # Create graph
-    G = create_model_dataset_graph(results, min_downloads, max_nodes)
-
-    if G.number_of_nodes() == 0:
-        print("❌ No nodes to visualize")
-        return
-
-    # Extract largest component if requested
-    if args.largest_component:
-        print()  # Add blank line for better formatting
-        G = extract_largest_component(G)
-
-        if G.number_of_nodes() == 0:
-            print("❌ No nodes in largest component to visualize")
-            return
-
-    # Visualize
-    print("\n🎨 Generating visualization...")
-    visualize_graph_interactive(G, output_file)
-
-    if args.largest_component:
-        print("\n✅ Visualization complete! Showing largest connected component.")
-        print(f"   Open in browser: {output_file}")
-    else:
-        print(f"\n✅ Visualization complete! Please open in browser: {output_file}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())

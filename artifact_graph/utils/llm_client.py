@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -30,6 +31,8 @@ def call_llm(
     messages: List[Dict[str, str]],
     model: str = "gpt-4o-mini",
     agent_name: str = "default_agent",
+    max_retries: int = 3,
+    retry_delay: int = 5,
 ) -> Dict[str, Any]:
     try:
         import litellm
@@ -52,13 +55,30 @@ def call_llm(
         if api_key_env and os.getenv(api_key_env):
             completion_params["api_key"] = os.getenv(api_key_env)
 
-        response = litellm.completion(**completion_params)
-        content = response.choices[0].message.content
-        print(f"✅ LLM ({agent_name}) call successful")
-        return {"success": True, "content": content}
+        for attempt in range(max_retries):
+            try:
+                response = litellm.completion(**completion_params)
+                if response and response.choices:
+                    content = response.choices[0].message.content
+                    print(f"✅ LLM ({agent_name}) call successful")
+                    return {"success": True, "content": content}
+                else:
+                    raise ValueError("Invalid response from LLM API")
+            except Exception as e:
+                print(
+                    f"❌ LLM ({agent_name}) call failed on attempt {attempt + 1}/{max_retries}: {e}"
+                )
+                if attempt + 1 == max_retries:
+                    # Log the final exception for debugging purposes
+                    import traceback
+
+                    traceback.print_exc()
+                    return {"success": False, "content": None, "error": str(e)}
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
 
     except Exception as e:
-        print(f"❌ LLM ({agent_name}) call failed: {e}")
+        print(f"❌ LLM ({agent_name}) setup failed: {e}")
         # Log the exception for debugging purposes
         import traceback
 

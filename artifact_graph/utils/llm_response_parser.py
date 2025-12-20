@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 import re
 from typing import Any, Dict, Optional
@@ -7,15 +8,15 @@ from typing import Any, Dict, Optional
 def parse_llm_response_to_json(content: str) -> Optional[Dict[str, Any]]:
     """
     Parse LLM response content to JSON, handling various response formats.
-    
+
     This function can handle:
     - JSON wrapped in ```json code blocks
     - Raw JSON objects in the response
     - Responses with <think>...</think> blocks that need to be removed
-    
+
     Args:
         content: The raw LLM response content
-        
+
     Returns:
         Parsed JSON dictionary if successful, None otherwise
     """
@@ -34,7 +35,7 @@ def parse_llm_response_to_json(content: str) -> Optional[Dict[str, Any]]:
             if start == -1 or end == 0:
                 return None
             json_str = content[start:end]
-        
+
         return json.loads(json_str)
     except (json.JSONDecodeError, IndexError, AttributeError):
         return None

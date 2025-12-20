@@ -250,7 +250,7 @@ def main():
     parser.add_argument(
         "json_file",
         nargs="?",
-        default="perfect_model_dataset_metrics.json",
+        default="./output/artifact_graph_raw_data/imperfect_model_dataset_metrics_1125.json",
         help="Path to JSON data file",
     )
 

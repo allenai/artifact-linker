@@ -1,247 +1,180 @@
 import json
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 import networkx as nx
+import numpy as np
 import torch
 from torch_geometric.data import Data
 
-from ..collectors import DatasetCollector, MetricCollector, ModelCollector
 
-MODEL_NODE = "model"
-DATASET_NODE = "dataset"
+def _load_graph_raw_data(graph_data_dir: str) -> Tuple[Dict, np.ndarray, Dict]:
+    data_path = Path(graph_data_dir)
+
+    with open(data_path / "node_metadata.json", "r") as f:
+        node_metadata = {int(k): v for k, v in json.load(f).items()}
+
+    edges_data = np.load(data_path / "edges.npz")
+    edges = edges_data["edges"]
+
+    with open(data_path / "edge_metadata.json", "r") as f:
+        edge_data = json.load(f)
+        edge_metadata = {}
+        for key_str, value in edge_data.items():
+            node_a, node_b = map(int, key_str.split(","))
+            edge_metadata[(node_a, node_b)] = value
+
+    return node_metadata, edges, edge_metadata
 
 
-def load_artifact_graph(
-    models_dir: str = "output/models/metadata",
-    datasets_dir: str = "output/datasets/metadata",
-    metrics_dir: str = "output/metrics",
-    hf_token: Optional[str] = None,
-    min_downloads: int = 1,
-    metric_key_substring: str = "acc",
-) -> nx.Graph:
-    """
-    Construct a bipartite graph of models and datasets based on evaluation metrics.
+def load_nx_graph(
+    graph_data_dir: str = "output/artifact_graph_data",
+) -> Tuple[nx.Graph, Dict, Dict]:
+    node_metadata, edges, edge_metadata = _load_graph_raw_data(graph_data_dir)
 
-    Nodes:
-      - model nodes with attributes {type: 'model', downloads}
-      - dataset nodes with attributes {type: 'dataset', downloads}
+    # filtered_edges, normalized_edge_metadata = _filter_and_normalize_edges(
+    #    edges, edge_metadata
+    # )
+    filtered_edges = edges
+    normalized_edge_metadata = edge_metadata
 
-    Edges:
-      - Connect model to dataset if a metric name contains `metric_key_substring`.
-      - Edge attribute: {metric_key_substring: metric_value}
-
-    Args:
-      models_dir: Directory of model metadata files.
-      datasets_dir: Directory of dataset metadata files.
-      metrics_dir: Directory of per-model metrics files.
-      hf_token: Hugging Face token (currently unused).
-      min_downloads: Minimum downloads threshold for filtering.
-      metric_key_substring: Substring to match metric names (case-insensitive).
-
-    Returns:
-      An undirected NetworkX graph.
-    """
     G = nx.Graph()
 
-    # Load metadata and metrics
-    models = ModelCollector.load_all_metadata(models_dir, min_downloads)
-    datasets = DatasetCollector.load_all_metadata(datasets_dir, min_downloads)
-    metrics = MetricCollector.load_all_metrics(metrics_dir)
+    int_node_metadata = {int(k): v for k, v in node_metadata.items()}
+    for node_id, data in int_node_metadata.items():
+        G.add_node(node_id, **data)
 
-    # Map normalized dataset name -> dataset ID
-    name_map: Dict[str, str] = {ds_id.split("/")[-1].lower(): ds_id for ds_id in datasets}
+    for u, v in filtered_edges:
+        edge_meta = normalized_edge_metadata.get((u, v), {})
+        metrics = edge_meta.get("metrics", {})
+        G.add_edge(u, v, **metrics)
 
-    for model_id, meta in models.items():
-        # Skip models without a linked paper
-        tags = meta.get("tags", [])
-        if not any(tag.startswith("arxiv:") for tag in tags):
-            continue
-
-        model_metrics = metrics.get(model_id, {})
-        if not model_metrics:
-            continue
-
-        # Inspect dataset metrics for this model
-        for ds_key, ds_metrics in model_metrics.items():
-            if not isinstance(ds_metrics, dict):
-                continue
-
-            ds_norm = ds_key.split("/")[-1].lower()
-            ds_id = name_map.get(ds_norm)
-            if not ds_id:
-                continue
-
-            # Find the first matching metric
-            metric_value: Optional[float] = None
-            for m_name, m_val in ds_metrics.items():
-                if metric_key_substring.lower() in m_name.lower() and isinstance(
-                    m_val, (int, float)
-                ):
-                    metric_value = float(m_val)
-                    break
-
-            if metric_value is None:
-                continue
-
-            # Normalize percentage values
-            if metric_value > 1:
-                metric_value /= 100
-
-            # Add dataset node if missing
-            if not G.has_node(ds_id):
-                G.add_node(model_id, type=MODEL_NODE, downloads=meta.get("downloads", 0))
-                G.add_node(ds_id, type=DATASET_NODE, downloads=datasets[ds_id].get("downloads", 0))
-
-                G.add_edge(model_id, ds_id, **{metric_key_substring: metric_value})
-
-    return G
-
-
-def load_artifact_graph_from_json(
-    json_file: str = "perfect_model_dataset_metrics.json",
-    min_downloads: int = 1,
-    metric_key: Optional[str] = "accuracy",
-) -> nx.Graph:
-    """
-    Construct a bipartite graph of models and datasets from perfect_model_dataset_metrics.json.
-
-    Nodes:
-      - model nodes with attributes {type: 'model', downloads}
-      - dataset nodes with attributes {type: 'dataset', downloads}
-
-    Edges:
-      - Connect model to dataset with metric value(s) from the JSON file.
-      - Edge attribute: {metric_key: metric_value} or all metrics if metric_key is None
-
-    Args:
-      json_file: Path to the perfect_model_dataset_metrics.json file.
-      min_downloads: Minimum downloads threshold for filtering nodes.
-      metric_key: The metric key to use from the metrics object. If None, include all metrics.
-
-    Returns:
-      An undirected NetworkX graph.
-    """
-    G = nx.Graph()
-
-    # Load data from JSON file
-    try:
-        with open(json_file, "r") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: JSON file not found at {json_file}")
-        return G
-
-    results = data.get("results", [])
-    print(f"Loaded {len(results)} model-dataset pairs from {json_file}")
-
-    for item in results:
-        model_id = item["model_id"]
-        dataset_id = item["dataset_id"]
-        model_downloads = item.get("model_downloads", 0)
-        dataset_downloads = item.get("dataset_downloads", 0)
-        metrics = item.get("metrics", {})
-
-        # Apply minimum downloads filter
-        if model_downloads < min_downloads or dataset_downloads < min_downloads:
-            continue
-
-        # Determine which metrics to include
-        if metric_key is None:
-            # Include all metrics
-            edge_attributes = {}
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)):
-                    metric_value = float(value)
-                    # Normalize percentage values
-                    if metric_value > 1:
-                        metric_value /= 100
-                    edge_attributes[key] = metric_value
-
-            # Skip if no valid metrics found
-            if not edge_attributes:
-                continue
-        else:
-            # Use specific metric key
-            metric_value = metrics.get(metric_key)
-            if metric_value is None:
-                continue
-
-            # Ensure metric value is a float between 0 and 1
-            try:
-                metric_value = float(metric_value)
-            except Exception as e:
-                print(e)
-                continue
-
-            edge_attributes = {metric_key: metric_value}
-
-        # Add nodes if they don't exist
-        if not G.has_node(model_id):
-            G.add_node(model_id, type=MODEL_NODE, downloads=model_downloads)
-        if not G.has_node(dataset_id):
-            G.add_node(dataset_id, type=DATASET_NODE, downloads=dataset_downloads)
-
-        # Add edge with metric value(s)
-        G.add_edge(model_id, dataset_id, **edge_attributes)
-
-    print(f"Built graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
-    return G
-
-
-def load_pyg_graph_from_networkx(G: nx.Graph) -> Data:
-    """
-    Convert a NetworkX bipartite graph to a PyTorch Geometric Data object.
-
-    Node features:
-      - One-hot encoding: [1,0] for model, [0,1] for dataset
-    Edge attributes:
-      - Uses the first available metric value on each edge
-
-    Returns:
-      A torch_geometric.data.Data object with:
-        - x: node feature tensor
-        - edge_index: edge index tensor
-        - edge_attr: edge attribute tensor
-        - model_names: list of model node IDs
-        - dataset_names: list of dataset node IDs
-    """
-    nodes = list(G.nodes)
-    idx_map = {node: idx for idx, node in enumerate(nodes)}
-    types = [G.nodes[node]["type"] for node in nodes]
-
-    # Build feature matrix
-    x = torch.zeros((len(nodes), 2), dtype=torch.float)
-    for idx, t in enumerate(types):
-        if t == MODEL_NODE:
-            x[idx, 0] = 1.0
-        elif t == DATASET_NODE:
-            x[idx, 1] = 1.0
-
-    node_type = torch.tensor([0 if t == MODEL_NODE else 1 for t in types], dtype=torch.long)
-
-    # Build edges and attributes
-    edge_index = []
-    edge_attr = []
-    for u, v, data in G.edges(data=True):
-        u_idx, v_idx = idx_map[u], idx_map[v]
-        edge_index.append([u_idx, v_idx])
-        # Take the first metric value available
-        metric_val = next(iter(data.values()), 0.0)
-        edge_attr.append(float(metric_val))
-
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-    edge_attr = torch.tensor(edge_attr, dtype=torch.float)
-
-    # Separate node lists by type
-    model_names = [node for node in nodes if G.nodes[node]["type"] == MODEL_NODE]
-    dataset_names = [node for node in nodes if G.nodes[node]["type"] == DATASET_NODE]
-
-    return Data(
-        x=x,
-        edge_index=edge_index,
-        edge_attr=edge_attr,
-        node_type=node_type,
-        model_names=model_names,
-        dataset_names=dataset_names,
-        node_names_ordered=nodes,
+    print(
+        f"Loaded NetworkX graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges (after filtering)"
     )
+    return G, int_node_metadata, normalized_edge_metadata
+
+
+
+
+def load_pyg_graph(
+    graph_data_dir: str = "output/artifact_graph_data",
+    metric_key: Optional[str] = None,
+    undirected: bool = True,
+) -> Tuple[Data, Dict]:
+    """
+    Load a PyG graph where:
+      - edge_index: structural edges for GNN message passing (no edge_attr attached)
+      - metric_edge_index / metric_edge_attr: ONLY edges that truly have a metric label
+
+    This avoids any default placeholder (e.g., 0.5). Edges without a real metric are
+    used for structure but excluded from supervision tensors.
+    """
+    data_path = Path(graph_data_dir)
+    node_metadata, edges, edge_metadata = _load_graph_raw_data(graph_data_dir)
+
+    # ---- Node embeddings (.npy or .npz) ----
+    emb_npy = data_path / "node_embeddings.npy"
+    emb_npz = data_path / "node_embeddings.npz"
+
+    if emb_npy.exists():
+        arr = np.load(emb_npy, allow_pickle=False)
+        # Handle either plain array or structured array with a field named 'embedding'
+        if getattr(arr, "dtype", None) is not None and getattr(arr.dtype, "names", None):
+            node_embeddings = arr["embedding"] if "embedding" in arr.dtype.names else np.asarray(arr.tolist())
+        else:
+            node_embeddings = arr
+        print(f"✅ Loaded embeddings: {emb_npy}")
+    elif emb_npz.exists():
+        arr = np.load(emb_npz)
+        # Prefer common keys
+        for k in ("embeddings", "embedding", "X", "x"):
+            if k in arr:
+                node_embeddings = arr[k]
+                break
+        else:
+            raise KeyError(f"No embeddings array found in {emb_npz}. Tried keys: embeddings/embedding/X/x")
+        print(f"✅ Loaded embeddings: {emb_npz}")
+    else:
+        print("⚠️ Embeddings not found. Using random fallback.")
+        node_embeddings = np.random.randn(len(node_metadata), 768).astype(np.float32)
+
+    x = torch.as_tensor(node_embeddings, dtype=torch.float)
+
+    # ---- Build structural edges + labeled metric edges ----
+    structural_edges = []
+    labeled_edges = []
+    labeled_vals = []
+
+    for u, v in edges:
+        u, v = int(u), int(v)
+        structural_edges.append([u, v])
+
+        meta = edge_metadata.get((u, v), {})
+        metrics: Dict = meta.get("metrics", {})
+
+        # pick the requested metric, or the first available NUMERIC one
+        mval = None
+        if metric_key is not None:
+            mval = metrics.get(metric_key)
+        elif metrics:
+            # Try to find the first value that looks like a number
+            for val_candidate in metrics.values():
+                if isinstance(val_candidate, (int, float)) and not isinstance(val_candidate, bool):
+                    mval = val_candidate
+                    break
+                # If it's a string, try to see if it's convertible to float
+                if isinstance(val_candidate, str):
+                    try:
+                        float(val_candidate)
+                        mval = val_candidate
+                        break
+                    except ValueError:
+                        continue
+            # If still None, fallback to the first value (and let the try-catch below handle it)
+            if mval is None:
+                mval = next(iter(metrics.values()), None)
+
+        if mval is not None:
+            try:
+                # Handle list/tuple by taking the first element if applicable, or skip
+                if isinstance(mval, (list, tuple)):
+                    if len(mval) > 0 and isinstance(mval[0], (int, float, str)):
+                         # aggressive fallback: try first element
+                         val = float(mval[0])
+                    else:
+                        continue # Skip complex list
+                else:
+                    val = float(mval)
+                
+                if val > 1.0:  # likely a percentage
+                    val = val / 100.0
+                labeled_edges.append([u, v])
+                labeled_vals.append(val)
+            except (ValueError, TypeError):
+                # Skip values that cannot be converted to float
+                continue
+
+    # make undirected if desired (for message passing)
+    if undirected:
+        structural_edges += [[v, u] for u, v in structural_edges]
+
+    edge_index = torch.tensor(structural_edges, dtype=torch.long).t().contiguous()
+
+    if len(labeled_edges) > 0:
+        metric_edge_index = torch.tensor(labeled_edges, dtype=torch.long).t().contiguous()
+        metric_edge_attr = torch.tensor(labeled_vals, dtype=torch.float)
+    else:
+        metric_edge_index = torch.empty((2, 0), dtype=torch.long)
+        metric_edge_attr = torch.empty((0,), dtype=torch.float)
+
+    data = Data(x=x, edge_index=edge_index)
+    # attach supervision-only tensors
+    data.metric_edge_index = metric_edge_index
+    data.metric_edge_attr = metric_edge_attr
+
+    print(
+        f"Loaded PyG graph: {x.size(0)} nodes, {edge_index.size(1)} structural edges; "
+        f"{metric_edge_index.size(1)} labeled edges."
+    )
+    return data, node_metadata
