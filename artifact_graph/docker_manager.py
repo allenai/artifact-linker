@@ -14,7 +14,7 @@ class DockerManager:
 
     def __init__(
         self,
-        image_name: str = "simple-coder:latest",
+        image_name: str = "artifact-linker-verification:latest",
         memory_limit: str = "8g",
         enable_gpu: bool = True,
         gpu_device_ids: Optional[List[int]] = None,
@@ -304,7 +304,7 @@ class DockerConfig:
     """Docker配置类"""
 
     # 默认配置
-    DEFAULT_IMAGE = "simple-coder:latest"
+    DEFAULT_IMAGE = "artifact-linker-verification:latest"
     DEFAULT_MEMORY_LIMIT = "32g"
 
     # GPU配置
@@ -365,17 +365,17 @@ class DockerConfig:
 
     @classmethod
     def cleanup_stale_containers(cls) -> int:
-        """清理所有simple-coder容器"""
+        """清理所有artifact-linker-verification容器"""
         try:
             docker_client = docker.from_env()
             containers = docker_client.containers.list(all=True)
 
             cleaned_count = 0
-            print("🧹 Cleaning up simple-coder containers...")
+            print("🧹 Cleaning up artifact-linker-verification containers...")
 
             for container in containers:
                 try:
-                    if "simple-coder" in str(container.image.tags):
+                    if "artifact-linker-verification" in str(container.image.tags):
                         print(f"Removing {container.name}...")
                         container.remove(force=True)
                         cleaned_count += 1

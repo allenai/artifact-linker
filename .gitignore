@@ -49,3 +49,8 @@ __pycache__
 
 docs/build
 site/
+
+dataset_loaders/
+model_loaders/
+*.json
+smolagent_results_*/

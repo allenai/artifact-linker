@@ -111,7 +111,7 @@ def run_code_in_docker(code: str) -> dict:
         "--gpus", f"device={gpu_id}",
         "-e", f"HF_TOKEN={hf_token}",
         "-e", "PYTHONPATH=/workspace",
-        "simple-coder:latest",
+        "artifact-linker-verification:latest",
         "bash", "-c",
         "python load_model.py"
     ]

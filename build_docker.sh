@@ -1,28 +1,28 @@
 #!/bin/bash
 
-# Build script for simple-coder Docker image
+# Build script for artifact-linker-verification Docker image
 
-echo "🐳 Building simple-coder Docker image..."
+echo "🐳 Building artifact-linker-verification Docker image..."
 
 # Clean up old containers first to free space
 echo "🧹 Cleaning up old containers..."
 docker container prune -f > /dev/null 2>&1
 
 # Build the image
-docker build --no-cache -t simple-coder:latest .
+docker build --no-cache -t artifact-linker-verification:latest .
 
 if [ $? -eq 0 ]; then
     echo "✅ Docker image built successfully!"
     echo "📋 Image details:"
-    docker images simple-coder:latest
+    docker images artifact-linker-verification:latest
 
     echo ""
     echo "🧪 Testing the image..."
     echo "  📦 Python version:"
-    docker run --rm simple-coder:latest python --version
+    docker run --rm artifact-linker-verification:latest python --version
 
     echo "  📚 Key packages:"
-    docker run --rm simple-coder:latest python -c "
+    docker run --rm artifact-linker-verification:latest python -c "
 import torch, transformers, datasets
 print(f'  PyTorch: {torch.__version__}')
 print(f'  Transformers: {transformers.__version__}')
@@ -30,7 +30,7 @@ print(f'  Datasets: {datasets.__version__}')
 "
 
     echo "  🔇 Warning suppression test:"
-    docker run --rm simple-coder:latest python -c "
+    docker run --rm artifact-linker-verification:latest python -c "
 import os
 print(f'  TF_CPP_MIN_LOG_LEVEL: {os.environ.get(\"TF_CPP_MIN_LOG_LEVEL\")}')
 print(f'  PYTHONWARNINGS: {os.environ.get(\"PYTHONWARNINGS\")}')

@@ -156,7 +156,7 @@ print(f"CUDA available: {torch.cuda.is_available()}")
         "--gpus", f"device={gpu_id}",  # Specify GPU device directly
         "-e", f"HF_TOKEN={hf_token}",  # HuggingFace token for gated models
         "-e", "PYTHONPATH=/workspace",
-        "simple-coder:latest",  # Custom image with dependencies pre-installed
+        "artifact-linker-verification:latest",  # Custom image with dependencies pre-installed
         "bash", "-c",
         "python run_eval.py"  # Dependencies already installed in image
     ]
