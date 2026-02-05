@@ -267,7 +267,7 @@ def main():
     parser.add_argument(
         "--base-dir",
         type=str,
-        default="smolagent_results_coding_agent_nli_sota_0112_full",
+        default="smolagent_results_v3_hard_multiturn_metadatatool",
         help="Base directory containing experiment folders",
     )
     parser.add_argument(

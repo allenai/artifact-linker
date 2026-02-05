@@ -21,31 +21,31 @@ echo "=========================================="
 # ============== MODE 1: ONETURN_ONETOOL ==============
 run_oneturn_onetool() {
     echo "Mode: ONETURN_ONETOOL (single turn, only docker run)"
-    python run_evaluation_coder.py \
+    python run_smolagent_evaluation_coder.py \
         --json-file $JSON_FILE \
         --mode oneturn_onetool \
         --llm-model $LLM_MODEL \
         --output-dir smolagent_results_v3_hard_oneturn_onetool \
-        --gpu-id 4
+        --gpu-id 5
     echo "ONETURN_ONETOOL completed!"
 }
 
 # ============== MODE 2: MULTITURN_ONETOOL ==============
 run_multiturn_onetool() {
     echo "Mode: MULTITURN_ONETOOL (multi-turn, only docker run)"
-    python run_evaluation_coder.py \
+    python run_smolagent_evaluation_coder.py \
         --json-file $JSON_FILE \
         --mode multiturn_onetool \
         --llm-model $LLM_MODEL \
         --output-dir smolagent_results_v3_hard_multiturn_onetool \
-        --gpu-id 4
+        --gpu-id 5 
     echo "MULTITURN_ONETOOL completed!"
 }
 
 # ============== MODE 3: MULTITURN_METADATATOOL ==============
 run_multiturn_metadatatool() {
     echo "Mode: MULTITURN_METADATATOOL (multi-turn, metadata tools + base_tools)"
-    python run_evaluation_coder.py \
+    python run_smolagent_evaluation_coder.py \
         --json-file $JSON_FILE \
         --mode multiturn_metadatatool \
         --llm-model $LLM_MODEL \
@@ -57,7 +57,7 @@ run_multiturn_metadatatool() {
 # ============== MODE 4: MULTITURN_CACHEFILETOOL ==============
 run_multiturn_cachefiletool() {
     echo "Mode: MULTITURN_CACHEFILETOOL (multi-turn, all tools + cached loaders)"
-    python run_evaluation_coder.py \
+    python run_smolagent_evaluation_coder.py \
         --json-file $JSON_FILE \
         --mode multiturn_cachefiletool \
         --llm-model $LLM_MODEL \

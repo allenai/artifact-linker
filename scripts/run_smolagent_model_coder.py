@@ -33,41 +33,99 @@ from smolagents import CodeAgent, LiteLLMModel, tool
 GLOBAL_GPU_ID = 0
 MODEL_LOADERS_DIR = "model_loaders"  # 保存模型加载脚本的目录
 CURRENT_OUTPUT_DIR = "/tmp/model_test"  # 当前输出目录（由脚本控制，不由 agent 控制）
+DEFAULT_INPUT_JSON = "perfect_model_dataset_metrics_v3_0120_coding_agent.json"
 
 
-# ============== NLI Model List ==============
-NLI_MODELS = [
-    # Zero-shot NLI models (classification head)
-    "MoritzLaurer/deberta-v3-large-zeroshot-v2.0",
-    "MoritzLaurer/deberta-v3-base-zeroshot-v2.0",
-    "MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
-    "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
-    "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7",
-    "MoritzLaurer/roberta-large-zeroshot-v2.0-c",
-    "MoritzLaurer/xtremedistil-l6-h256-zeroshot-v1.1-all-33",
+def get_successful_datasets(dataset_loaders_dir: str) -> set:
+    """Get set of dataset IDs that have load_success=True in their results.json."""
+    successful = set()
+    loaders_path = Path(dataset_loaders_dir)
+    if not loaders_path.exists():
+        return successful
     
-    # Standard NLI models (classification head)
-    "facebook/bart-large-mnli",
-    "roberta-large-mnli",
-    "microsoft/deberta-v3-base",
-    "microsoft/deberta-base-mnli",
-    "valhalla/distilbart-mnli-12-6",
-    "joeddav/bart-large-mnli-yahoo-answers",
-    "typeform/distilbert-base-uncased-mnli",
+    for subdir in loaders_path.iterdir():
+        if not subdir.is_dir():
+            continue
+        results_file = subdir / 'results.json'
+        if results_file.exists():
+            try:
+                with open(results_file) as f:
+                    r = json.load(f)
+                if r.get('load_success', False):
+                    # Convert dir name back to dataset_id
+                    dataset_id = subdir.name.replace('_', '/', 1)
+                    successful.add(dataset_id)
+            except:
+                pass
+    return successful
+
+
+def load_models_from_json(json_path: str, sort_by_popularity: bool = True, prioritize_ready_datasets: bool = True) -> list:
+    """Load unique model IDs from a JSON file, prioritizing models with successful dataset loaders.
     
-    # Modern models
-    "tasksource/ModernBERT-large-nli",
-    "tasksource/ModernBERT-base-nli",
+    Expected JSON format:
+    {
+        "results": [
+            {"model_id": "...", "dataset_id": "...", "metrics": {...}},
+            ...
+        ]
+    }
     
-    # Sentence embedding models
-    "Muennighoff/SGPT-125M-weightedmean-nli-bitfit",
+    Args:
+        json_path: Path to JSON file
+        sort_by_popularity: If True, sort models by number of associated datasets (descending)
+        prioritize_ready_datasets: If True, prioritize models that have successful dataset loaders
     
-    # Generative models (need prompting)
-    "google/gemma-2-2b",
-    "google/gemma-2b",
-    "google/gemma-3-1b-it",
-    "EleutherAI/gpt-neo-1.3B",
-]
+    Returns:
+        List of model IDs, sorted by priority
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    
+    # Get successful datasets
+    script_dir = Path(json_path).parent
+    dataset_loaders_dir = script_dir / "dataset_loaders"
+    successful_datasets = get_successful_datasets(str(dataset_loaders_dir))
+    print(f"Found {len(successful_datasets)} successful dataset loaders")
+    
+    # Count datasets per model (total and successful)
+    model_total_count = {}
+    model_success_count = {}  # Count of successful datasets per model
+    
+    for item in data.get('results', []):
+        model_id = item.get('model_id', '')
+        dataset_id = item.get('dataset_id', '')
+        if model_id:
+            model_total_count[model_id] = model_total_count.get(model_id, 0) + 1
+            if dataset_id in successful_datasets:
+                model_success_count[model_id] = model_success_count.get(model_id, 0) + 1
+    
+    if prioritize_ready_datasets:
+        # Filter to only include models that have at least one successful dataset loader
+        models_with_ready = [m for m in model_total_count.keys() if model_success_count.get(m, 0) > 0]
+        
+        # Sort by: 1) number of successful datasets (descending), 2) total datasets (descending), 3) alphabetically
+        sorted_models = sorted(
+            models_with_ready,
+            key=lambda m: (-model_success_count.get(m, 0), -model_total_count[m], m)
+        )
+        print(f"Models with at least 1 ready dataset: {len(sorted_models)} (filtered from {len(model_total_count)} total)")
+        print(f"Models sorted by ready datasets (top 15):")
+        for m in sorted_models[:15]:
+            print(f"  {model_success_count.get(m, 0):3d} ready / {model_total_count[m]:3d} total - {m}")
+        return sorted_models
+    elif sort_by_popularity:
+        # Sort by dataset count (descending), then alphabetically
+        sorted_models = sorted(
+            model_total_count.keys(),
+            key=lambda m: (-model_total_count[m], m)
+        )
+        print(f"Models sorted by popularity (top 10):")
+        for m in sorted_models[:10]:
+            print(f"  {model_total_count[m]:4d} datasets - {m}")
+        return sorted_models
+    else:
+        return sorted(list(model_total_count.keys()))
 
 
 @tool
@@ -284,6 +342,12 @@ REQUIREMENTS:
 
 7. If the script fails, fix it and retry until it works.
 
+IMPORTANT RULES:
+- DO NOT create wrapper scripts that write to another file and then run it.
+- DO NOT use textwrap.dedent, runpy, or similar tricks.
+- The script you provide should be a DIRECT, STANDALONE Python file with `def load_model():` defined at the top level.
+- The script should NOT create any additional .py files.
+
 Return the final working script content.
 """
     
@@ -309,10 +373,12 @@ def main():
     
     parser = argparse.ArgumentParser(description="Generate model loading scripts")
     parser.add_argument("--output-dir", default="model_loaders", help="Output directory")
+    parser.add_argument("--input-json", default=None, help="Input JSON file with model/dataset list")
     parser.add_argument("--llm-model", default="gpt-5.2", help="LLM model to use")
     parser.add_argument("--model", default=None, help="Specific model to process (default: all)")
     parser.add_argument("--gpu-id", type=int, default=7, help="GPU device ID")
-    parser.add_argument("--max-steps", type=int, default=8, help="Max agent steps")
+    parser.add_argument("--max-steps", type=int, default=6, help="Max agent steps")
+    parser.add_argument("--shard", type=str, default=None, help="Shard specification: 'i/n' means process shard i of n total shards (1-indexed)")
     args = parser.parse_args()
     
     global GLOBAL_GPU_ID
@@ -322,13 +388,45 @@ def main():
     output_base = script_dir / args.output_dir
     output_base.mkdir(exist_ok=True)
     
-    agent = create_model_agent(model_id=args.llm_model, max_steps=args.max_steps)
+    # Load models from JSON file
+    input_json = args.input_json or (script_dir / DEFAULT_INPUT_JSON)
+    if not os.path.exists(input_json):
+        print(f"❌ Input JSON file not found: {input_json}")
+        sys.exit(1)
+    
+    all_models = load_models_from_json(str(input_json))
+    print(f"📋 Loaded {len(all_models)} unique models from {input_json}")
     
     # Filter models if specified
     if args.model:
-        models_to_process = [m for m in NLI_MODELS if args.model in m]
+        models_to_process = [m for m in all_models if args.model in m]
     else:
-        models_to_process = NLI_MODELS
+        models_to_process = all_models
+    
+    # Apply sharding if specified
+    if args.shard:
+        try:
+            shard_idx, total_shards = map(int, args.shard.split('/'))
+            if shard_idx < 1 or shard_idx > total_shards:
+                raise ValueError("Shard index must be between 1 and total_shards")
+            
+            # Split models into shards
+            shard_size = len(models_to_process) // total_shards
+            start_idx = (shard_idx - 1) * shard_size
+            if shard_idx == total_shards:
+                # Last shard gets remaining items
+                end_idx = len(models_to_process)
+            else:
+                end_idx = start_idx + shard_size
+            
+            models_to_process = models_to_process[start_idx:end_idx]
+            print(f"🔀 Shard {shard_idx}/{total_shards}: processing models {start_idx+1}-{end_idx} ({len(models_to_process)} models)")
+        except Exception as e:
+            print(f"❌ Invalid shard specification '{args.shard}': {e}")
+            print("   Use format: --shard 1/4 (process shard 1 of 4)")
+            sys.exit(1)
+    
+    agent = create_model_agent(model_id=args.llm_model, max_steps=args.max_steps)
     
     results = {}
     
@@ -338,24 +436,16 @@ def main():
         model_output_dir = output_base / safe_name
         model_output_dir.mkdir(exist_ok=True)
         
-        # Check if already successfully generated
-        results_path = model_output_dir / "results.json"
-        if results_path.exists():
-            try:
-                with open(results_path, "r") as f:
-                    existing_results = json.load(f)
-                if existing_results.get("load_success", False):
-                    print(f"⏭️  Skipping {model_id} - already successfully generated")
-                    results[model_id] = {
-                        "success": True,
-                        "output_dir": str(model_output_dir),
-                        "inference_type": existing_results.get("inference_type"),
-                        "num_labels": existing_results.get("num_labels"),
-                        "skipped": True
-                    }
-                    continue
-            except Exception as e:
-                print(f"⚠️ Failed to read existing results for {model_id}: {e}")
+        # Check if already completed (load_model.py exists)
+        script_path = model_output_dir / "load_model.py"
+        if script_path.exists():
+            print(f"⏭️  Skipping {model_id} - load_model.py already exists")
+            results[model_id] = {
+                "success": True,
+                "output_dir": str(model_output_dir),
+                "skipped": True
+            }
+            continue
         
         # Generate loader
         try:
