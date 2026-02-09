@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""LLM-based link ranking."""
+"""
+LLM-based link ranking with optional RAG retrieval.
+
+Without RAG: LLM ranks ALL ~2800 candidate models (slow, expensive)
+With RAG: Retrieval filters to top-k candidates, then LLM re-ranks (fast, cheap)
+
+Examples:
+    # Without RAG (all candidates)
+    python rank_link_llm.py --max-datasets 5
+
+    # With RAG (recommended for large-scale)
+    python rank_link_llm.py --use-rag --rag-top-k 50 --rag-strategy hybrid
+"""
 import argparse
 import sys
 from pathlib import Path
@@ -10,31 +22,49 @@ from artifact_graph.runners.link_runner import LinkConfig
 
 
 def main():
-    p = argparse.ArgumentParser(description="LLM Link Ranking")
-    p.add_argument("--data-dir", default="output/artifact_graph_data")
-    p.add_argument("--output-dir", default="output/final_results")
+    p = argparse.ArgumentParser(
+        description="LLM Link Ranking",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Data
+    p.add_argument("--data-dir", default="../data/artifact_graph_data_v2_1125")
+    p.add_argument("--split-dir", default="../data/artifact_graph_splits_v2_1125_transductive",
+                   help="Split directory (uses same test set as GNN)")
+    p.add_argument("--output-dir", default="../data/final_results")
     p.add_argument("--seed", type=int, default=42)
+
+    # LLM options
     p.add_argument("--model", default="openai/gpt-4o")
     p.add_argument("--hops", type=int, default=1)
     p.add_argument("--no-info", action="store_false", dest="use_info")
-    p.add_argument("--max-datasets", type=int, default=0)
-    p.add_argument("--candidates-per-dataset", type=int, default=10)
+    p.add_argument("--max-datasets", type=int, default=0, help="0 = all datasets")
     p.add_argument("--workers", type=int, default=4)
-    p.add_argument("--use-gnn-data", action="store_true")
+
+    # RAG options
+    p.add_argument("--use-rag", action="store_true",
+                   help="Enable RAG retrieval before LLM ranking")
+    p.add_argument("--rag-top-k", type=int, default=100,
+                   help="Number of candidates to retrieve (default: 100)")
+    p.add_argument("--rag-strategy", default="hybrid",
+                   choices=["embedding", "bm25", "heuristic", "hybrid"],
+                   help="Retrieval strategy")
     args = p.parse_args()
 
     config = LinkConfig(
         method="llm",
         data_dir=args.data_dir,
+        split_dir=args.split_dir,
         output_dir=args.output_dir,
         seed=args.seed,
         llm_model=args.model,
         hops=args.hops,
         use_info=args.use_info,
         max_datasets=args.max_datasets,
-        candidates_per_dataset=args.candidates_per_dataset,
         workers=args.workers,
-        use_gnn_data=args.use_gnn_data,
+        # RAG
+        use_rag=args.use_rag,
+        rag_top_k=args.rag_top_k,
+        rag_strategy=args.rag_strategy,
     )
     run_link_ranking(config)
 

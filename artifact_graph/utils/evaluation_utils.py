@@ -643,6 +643,73 @@ def _calculate_recall_at_k(
     return hits / len(true_relevant_items) if true_relevant_items else 0.0
 
 
+def calculate_pairwise_accuracy(
+    predicted_ranking: List[Tuple[Any, float]],
+    ground_truth: Dict[Any, float],
+) -> float:
+    """
+    Calculate pairwise accuracy: fraction of item pairs that are correctly ordered.
+
+    A pair (i, j) where i is ranked higher than j is "correct" if
+    ground_truth[i] > ground_truth[j]. Ties in ground truth are skipped.
+
+    Args:
+        predicted_ranking: List of (item, predicted_score) tuples in predicted order
+                           (highest predicted first).
+        ground_truth: Dictionary mapping items to ground truth scores.
+
+    Returns:
+        Fraction of non-tied pairs that are correctly ordered (0.0–1.0).
+        Returns 0.0 if there are fewer than 2 comparable pairs.
+    """
+    correct = 0
+    total = 0
+    for i in range(len(predicted_ranking)):
+        for j in range(i + 1, len(predicted_ranking)):
+            item_i = predicted_ranking[i][0]
+            item_j = predicted_ranking[j][0]
+            if item_i not in ground_truth or item_j not in ground_truth:
+                continue
+            ti = ground_truth[item_i]
+            tj = ground_truth[item_j]
+            if ti == tj:
+                continue  # skip ties
+            total += 1
+            # i is ranked higher (earlier) than j; correct if ti > tj
+            if ti > tj:
+                correct += 1
+    return correct / total if total > 0 else 0.0
+
+
+def calculate_regret_at_k(
+    predicted_ranking: List[Tuple[Any, float]],
+    ground_truth: Dict[Any, float],
+    k: int = 1,
+) -> float:
+    """
+    Calculate Regret@k: difference between the best achievable ground-truth score
+    and the ground-truth score of the k-th predicted item.
+
+    A lower regret means the model's top-k recommendation is closer to optimal.
+
+    Args:
+        predicted_ranking: List of (item, predicted_score) tuples in predicted order
+                           (highest predicted first).
+        ground_truth: Dictionary mapping items to ground truth scores.
+        k: Which predicted position to evaluate (1-based; default 1 = top-1).
+
+    Returns:
+        Non-negative regret value (best_true - true_value_of_predicted_top_k).
+        Returns 0.0 if ground_truth is empty or k is out of range.
+    """
+    if not ground_truth or k < 1 or k > len(predicted_ranking):
+        return 0.0
+    best_true = max(ground_truth.values())
+    top_k_item = predicted_ranking[k - 1][0]
+    top_k_true = ground_truth.get(top_k_item, 0.0)
+    return max(best_true - top_k_true, 0.0)
+
+
 def calculate_mse(predicted_scores: List[float], true_scores: List[float]) -> float:
     """Calculate Mean Squared Error."""
     if len(predicted_scores) != len(true_scores):

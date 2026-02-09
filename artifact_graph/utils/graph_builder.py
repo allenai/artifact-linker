@@ -1,11 +1,12 @@
 import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
 import networkx as nx
 import numpy as np
-import torch
-from torch_geometric.data import Data
+
+if TYPE_CHECKING:
+    from torch_geometric.data import Data
 
 
 def _load_graph_raw_data(graph_data_dir: str) -> Tuple[Dict, np.ndarray, Dict]:
@@ -17,7 +18,7 @@ def _load_graph_raw_data(graph_data_dir: str) -> Tuple[Dict, np.ndarray, Dict]:
     edges_data = np.load(data_path / "edges.npz")
     edges = edges_data["edges"]
 
-    with open(data_path / "edge_metadata.json", "r") as f:
+    with open(data_path / "edge_metadata_normalized.json", "r") as f:
         edge_data = json.load(f)
         edge_metadata = {}
         for key_str, value in edge_data.items():
@@ -61,7 +62,7 @@ def load_pyg_graph(
     graph_data_dir: str = "output/artifact_graph_data",
     metric_key: Optional[str] = None,
     undirected: bool = True,
-) -> Tuple[Data, Dict]:
+) -> Tuple["Data", Dict]:
     """
     Load a PyG graph where:
       - edge_index: structural edges for GNN message passing (no edge_attr attached)
@@ -70,6 +71,9 @@ def load_pyg_graph(
     This avoids any default placeholder (e.g., 0.5). Edges without a real metric are
     used for structure but excluded from supervision tensors.
     """
+    import torch
+    from torch_geometric.data import Data
+    
     data_path = Path(graph_data_dir)
     node_metadata, edges, edge_metadata = _load_graph_raw_data(graph_data_dir)
 

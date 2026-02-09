@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 
@@ -9,14 +9,34 @@ from artifact_graph.utils.llm_response_parser import parse_llm_response_to_json
 
 
 class LLMLinkRanker:
-    """Model ranker for given datasets using LLM."""
+    """Model ranker for given datasets using LLM with optional RAG retrieval."""
 
     def __init__(
-        self, model_name="openai/gpt-3.5-turbo", hop_number: int = 1, use_info: bool = True
+        self,
+        model_name="openai/gpt-3.5-turbo",
+        hop_number: int = 1,
+        use_info: bool = True,
+        use_rag: bool = False,
+        rag_top_k: int = 100,
+        retriever=None,
     ):
+        """
+        Initialize LLM link ranker.
+
+        Args:
+            model_name: LLM model to use
+            hop_number: Number of hops for neighbor context
+            use_info: Whether to include node info in prompts
+            use_rag: Whether to use RAG for candidate filtering
+            rag_top_k: Number of candidates to retrieve before LLM ranking
+            retriever: CandidateRetriever instance (optional, created on demand)
+        """
         self.model_name = model_name
         self.hop_number = hop_number
         self.use_info = use_info
+        self.use_rag = use_rag
+        self.rag_top_k = rag_top_k
+        self.retriever = retriever
 
     def rank(
         self,
@@ -45,6 +65,36 @@ class LLMLinkRanker:
 
             # Combine positive and negative models
             all_models_to_rank = positive_models + negative_candidates
+
+            # Apply RAG filtering if enabled
+            retrieval_scores = {}
+            if self.use_rag and len(all_models_to_rank) > self.rag_top_k:
+                from artifact_graph.utils.retriever import filter_candidates_by_retrieval
+
+                # Ensure retriever is available
+                if self.retriever is None:
+                    from artifact_graph.utils.retriever import CandidateRetriever
+                    import numpy as np
+
+                    # Build retriever from node metadata
+                    self.retriever = CandidateRetriever(
+                        strategy="hybrid",
+                        node_metadata=node_metadata,
+                        top_k=self.rag_top_k,
+                    )
+
+                # Retrieve top-k candidates (always include positives)
+                filtered_candidates, retrieval_scores = filter_candidates_by_retrieval(
+                    dataset_id, all_models_to_rank, self.retriever, G
+                )
+
+                # Ensure all positives are included
+                positive_set = set(positive_models)
+                filtered_set = set(filtered_candidates)
+                missing_positives = [m for m in positive_models if m not in filtered_set]
+
+                all_models_to_rank = filtered_candidates + missing_positives
+                print(f"  RAG: {len(positive_models + negative_candidates)} -> {len(all_models_to_rank)} candidates")
 
             # Get model names, info, and neighbors
             model_info = {}
@@ -115,6 +165,9 @@ class LLMLinkRanker:
                         "positive_models": positive_models,
                         "negative_candidates": negative_candidates,
                         "total_models_ranked": len(all_models_to_rank),
+                        "rag_enabled": self.use_rag,
+                        "rag_top_k": self.rag_top_k if self.use_rag else None,
+                        "retrieval_scores": retrieval_scores if self.use_rag else None,
                     }
                 )
 

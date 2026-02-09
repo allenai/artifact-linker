@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Baseline link ranking."""
+"""Baseline link ranking (uses ALL models as candidates)."""
 import argparse
 import sys
 from pathlib import Path
@@ -11,24 +11,27 @@ from artifact_graph.runners.link_runner import LinkConfig
 
 def main():
     p = argparse.ArgumentParser(description="Baseline Link Ranking")
-    p.add_argument("--data-dir", default="output/artifact_graph_data")
-    p.add_argument("--output-dir", default="output/final_results")
+    p.add_argument("--data-dir", default="../data/artifact_graph_data_v2_1125")
+    p.add_argument("--split-dir", default="../data/artifact_graph_splits_v2_1125_transductive",
+                   help="Split directory (uses same test set as GNN)")
+    p.add_argument("--output-dir", default="../data/final_results")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--mode", default="downloads")
-    p.add_argument("--max-datasets", type=int, default=0)
-    p.add_argument("--candidates-per-dataset", type=int, default=10)
-    p.add_argument("--use-gnn-data", action="store_true")
+    p.add_argument("--mode", default="downloads",
+                   choices=["downloads", "random", "connectivity", "common_neighbors",
+                            "jaccard", "adamic_adar", "preferential_attachment",
+                            "resource_allocation", "katz"],
+                   help="Ranking heuristic")
+    p.add_argument("--max-datasets", type=int, default=0, help="0 = all datasets")
     args = p.parse_args()
 
     config = LinkConfig(
         method="baseline",
         data_dir=args.data_dir,
+        split_dir=args.split_dir,
         output_dir=args.output_dir,
         seed=args.seed,
         baseline_mode=args.mode,
         max_datasets=args.max_datasets,
-        candidates_per_dataset=args.candidates_per_dataset,
-        use_gnn_data=args.use_gnn_data,
     )
     run_link_ranking(config)
 

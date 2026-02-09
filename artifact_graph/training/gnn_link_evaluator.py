@@ -31,7 +31,7 @@ class EvaluationResult:
         return result
 
 
-class GNNEvaluator:
+class GNNLinkEvaluator:
     """Evaluator for GNN link prediction models."""
 
     # Degree bucket definitions
@@ -206,6 +206,8 @@ class GNNEvaluator:
         """Print metrics in a formatted way."""
         print(f"\n{prefix}_auc {metrics['auc']:.4f} | "
               f"{prefix}_f1 {metrics['f1']:.4f} | "
+              f"{prefix}_prec {metrics['precision']:.4f} | "
+              f"{prefix}_rec {metrics['recall']:.4f} | "
               f"{prefix}_acc {metrics['accuracy']:.4f}")
 
         # Print degree-controlled breakdown

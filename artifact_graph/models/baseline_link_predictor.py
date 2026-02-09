@@ -7,13 +7,21 @@ import numpy as np
 
 
 class BaselineLinkPredictor:
+    VALID_MODES = [
+        "downloads", "random", "connectivity", "common_neighbors",
+        "jaccard", "adamic_adar", "preferential_attachment",
+        "resource_allocation", "katz",
+    ]
+
     def __init__(self, mode: str = "downloads", **kwargs):
         """
         Initialize baseline link predictor with different modes.
 
         Args:
             mode: Prediction strategy
-                - "downloads": Based on download thresholds (original)
+                - "downloads": Based on download thresholds
+                - "random": Random prediction with probability threshold
+                - "connectivity": Based on combined node degrees
                 - "common_neighbors": Based on common neighbors count
                 - "jaccard": Based on Jaccard coefficient
                 - "adamic_adar": Based on Adamic-Adar index
@@ -22,11 +30,19 @@ class BaselineLinkPredictor:
                 - "katz": Based on Katz centrality (simplified)
         """
         self.mode = mode
-        
+        self.seed = kwargs.get("seed", 42)
+
+        if mode not in self.VALID_MODES:
+            raise ValueError(f"Unknown mode: {mode}. Must be one of {self.VALID_MODES}.")
+
         # Mode-specific parameters
         if mode == "downloads":
             self.model_download_threshold = kwargs.get("model_download_threshold", 1000)
             self.dataset_download_threshold = kwargs.get("dataset_download_threshold", 100)
+        elif mode == "random":
+            self.threshold = kwargs.get("threshold", 0.5)
+        elif mode == "connectivity":
+            self.threshold = kwargs.get("threshold", 10)  # Combined degree threshold
         elif mode == "common_neighbors":
             self.threshold = kwargs.get("threshold", 1)
         elif mode == "jaccard":
@@ -38,10 +54,8 @@ class BaselineLinkPredictor:
         elif mode == "resource_allocation":
             self.threshold = kwargs.get("threshold", 0.1)
         elif mode == "katz":
-            self.threshold = kwargs.get("threshold", 0.01)  # Lower default threshold
-            self.beta = kwargs.get("beta", 0.1)  # Katz parameter
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
+            self.threshold = kwargs.get("threshold", 0.01)
+            self.beta = kwargs.get("beta", 0.1)
 
     def _get_common_neighbors_score(self, model_id: int, dataset_id: int, G: nx.Graph) -> float:
         """Count common neighbors between model and dataset."""
@@ -137,22 +151,21 @@ class BaselineLinkPredictor:
         node_metadata: dict,
     ) -> Optional[Dict[str, Any]]:
         try:
-            if self.mode == "downloads":
-                return self._predict_downloads(model_id, dataset_id, G, node_metadata)
-            elif self.mode == "common_neighbors":
-                return self._predict_common_neighbors(model_id, dataset_id, G, node_metadata)
-            elif self.mode == "jaccard":
-                return self._predict_jaccard(model_id, dataset_id, G, node_metadata)
-            elif self.mode == "adamic_adar":
-                return self._predict_adamic_adar(model_id, dataset_id, G, node_metadata)
-            elif self.mode == "preferential_attachment":
-                return self._predict_preferential_attachment(model_id, dataset_id, G, node_metadata)
-            elif self.mode == "resource_allocation":
-                return self._predict_resource_allocation(model_id, dataset_id, G, node_metadata)
-            elif self.mode == "katz":
-                return self._predict_katz(model_id, dataset_id, G, node_metadata)
-            else:
+            predict_fn = {
+                "downloads": self._predict_downloads,
+                "random": self._predict_random,
+                "connectivity": self._predict_connectivity,
+                "common_neighbors": self._predict_common_neighbors,
+                "jaccard": self._predict_jaccard,
+                "adamic_adar": self._predict_adamic_adar,
+                "preferential_attachment": self._predict_preferential_attachment,
+                "resource_allocation": self._predict_resource_allocation,
+                "katz": self._predict_katz,
+            }.get(self.mode)
+
+            if predict_fn is None:
                 raise ValueError(f"Unknown mode: {self.mode}")
+            return predict_fn(model_id, dataset_id, G, node_metadata)
         except Exception as e:
             print(f"Error predicting for ({model_id}, {dataset_id}): {e}")
             return None
@@ -189,7 +202,26 @@ class BaselineLinkPredictor:
             "reason": reason,
             "model_downloads": model_downloads,
             "dataset_downloads": dataset_downloads,
+            "score": float(model_downloads + dataset_downloads),  # Combined score for ranking
         }
+
+    def _predict_random(self, model_id: int, dataset_id: int, G: nx.Graph, node_metadata: dict) -> Dict[str, Any]:
+        """Random prediction based on a seeded random value."""
+        import random
+        rng = random.Random(self.seed + hash((model_id, dataset_id)) % 10000)
+        score = rng.random()
+        prediction = score >= self.threshold
+        reason = f"Random score: {score:.4f} ({'✓' if prediction else '✗'} >= {self.threshold})"
+        return {"prediction": prediction, "reason": reason, "score": score}
+
+    def _predict_connectivity(self, model_id: int, dataset_id: int, G: nx.Graph, node_metadata: dict) -> Dict[str, Any]:
+        """Predict based on combined node degrees."""
+        m_deg = G.degree(model_id) if model_id in G else 0
+        d_deg = G.degree(dataset_id) if dataset_id in G else 0
+        score = float(m_deg + d_deg)
+        prediction = score >= self.threshold
+        reason = f"Combined degree: {score} (model={m_deg}, dataset={d_deg}) ({'✓' if prediction else '✗'} >= {self.threshold})"
+        return {"prediction": prediction, "reason": reason, "score": score}
 
     def _predict_common_neighbors(self, model_id: int, dataset_id: int, G: nx.Graph, node_metadata: dict) -> Dict[str, Any]:
         score = self._get_common_neighbors_score(model_id, dataset_id, G)

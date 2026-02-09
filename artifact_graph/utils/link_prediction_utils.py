@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
-"""
-Shared utilities for link prediction scripts.
-
-This module provides common functions used across different link prediction methods:
-- LLM-based prediction (predict_link_llm.py)
-- Baseline/heuristic prediction (predict_link_baseline.py)
-- GNN-based prediction (predict_link_gnn.py)
-"""
+"""Shared utilities for link prediction scripts."""
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+import networkx as nx
 import numpy as np
 
 from .evaluation_utils import evaluate_binary_classification
 
-if TYPE_CHECKING:
-    import networkx as nx
-
-# Type aliases
 Edge = Tuple[int, int]
-PredictionRow = Dict[str, Any]
 
+
+# =============================================================================
+# Common Utilities
+# =============================================================================
 
 def convert_numpy_types(obj: Any) -> Any:
     """Convert numpy types to native Python types for JSON serialization."""
@@ -31,40 +25,145 @@ def convert_numpy_types(obj: Any) -> Any:
         return {k: convert_numpy_types(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [convert_numpy_types(v) for v in obj]
-    elif hasattr(obj, "item"):  # numpy scalar
+    elif hasattr(obj, "item"):
         return obj.item()
-    elif hasattr(obj, "tolist"):  # numpy array
+    elif hasattr(obj, "tolist"):
         return obj.tolist()
+    return obj
+
+
+# =============================================================================
+# Data Preparation
+# =============================================================================
+
+def prepare_link_prediction_data(
+    G: nx.Graph,
+    seed: int = 42,
+    max_pairs: int = 0,
+) -> Tuple[List[Edge], List[int]]:
+    """
+    Prepare link prediction dataset using ALL model-dataset pairs.
+    
+    Positives: Existing edges.
+    Negatives: ALL pairs without edges.
+    """
+    rng = random.Random(seed)
+
+    models = [n for n, d in G.nodes(data=True) if d.get("type") == "model"]
+    datasets = [n for n, d in G.nodes(data=True) if d.get("type") == "dataset"]
+
+    pos_edges: Set[Edge] = set()
+    for u, v in G.edges():
+        u_type, v_type = G.nodes[u].get("type"), G.nodes[v].get("type")
+        if u_type == "model" and v_type == "dataset":
+            pos_edges.add((u, v))
+        elif u_type == "dataset" and v_type == "model":
+            pos_edges.add((v, u))
+
+    neg_edges = [(m, d) for m in models for d in datasets if (m, d) not in pos_edges]
+
+    all_edges = list(pos_edges) + neg_edges
+    labels = [1] * len(pos_edges) + [0] * len(neg_edges)
+    combined = list(zip(all_edges, labels))
+    rng.shuffle(combined)
+
+    if combined:
+        edges, labels = zip(*combined)
     else:
-        return obj
+        edges, labels = [], []
+
+    if max_pairs > 0:
+        edges, labels = list(edges)[:max_pairs], list(labels)[:max_pairs]
+    
+    return list(edges), list(labels)
 
 
-def load_prediction_data(
+# =============================================================================
+# Data Loading
+# =============================================================================
+
+def load_link_prediction_data(
     graph_data_dir: str | Path,
     seed: int = 42,
-    max_pairs: int = 5000,
+    max_pairs: int = 0,
     use_gnn_data: bool = False,
     gnn_data_path: str = "output/final_results/gnn_link_predictions.json",
+    split_dir: str | Path | None = None,
 ) -> Tuple[Any, Dict, List[Edge], List[int]]:
     """
-    Load graph data and prepare edges for link prediction.
-
+    Load graph and prepare link prediction data.
+    
     Args:
-        graph_data_dir: Path to graph data directory
-        seed: Random seed for reproducibility
-        max_pairs: Maximum number of pairs to predict
-        use_gnn_data: Whether to use GNN test data instead of sampling
-        gnn_data_path: Path to GNN predictions file
-
+        graph_data_dir: Directory containing graph data.
+        seed: Random seed.
+        max_pairs: Max pairs to use (0 = all).
+        use_gnn_data: Load edges from GNN predictions file.
+        gnn_data_path: Path to GNN predictions.
+        split_dir: If provided, load test edges from this split directory.
+    
     Returns:
-        Tuple of (graph, node_metadata, edges, labels)
+        Tuple of (G, node_metadata, edges, labels).
     """
-    # Lazy imports to avoid dependency issues
     from .graph_builder import load_nx_graph
-    from .graph_utils import prepare_link_predictor_dataset
+    import numpy as np
 
     G, node_metadata, _ = load_nx_graph(graph_data_dir=str(graph_data_dir))
-    edges, labels = prepare_link_predictor_dataset(G, seed=seed, max_pairs=max_pairs)
+
+    if split_dir is not None:
+        # Load from pre-defined split (same as GNN)
+        split_path = Path(split_dir) / "test_split"
+        pos_edges = np.load(split_path / "pos_edges.npz")["edges"]
+        
+        # Get all positive edges to determine negatives
+        all_pos = set()
+        for split_name in ["train_split", "val_split", "test_split"]:
+            pos_path = Path(split_dir) / split_name / "pos_edges.npz"
+            if pos_path.exists():
+                pos = np.load(pos_path)["edges"]
+                for i in range(pos.shape[1]):
+                    all_pos.add((int(pos[0, i]), int(pos[1, i])))
+                    all_pos.add((int(pos[1, i]), int(pos[0, i])))
+        
+        # Build test edges with full negatives
+        test_pos = [(int(pos_edges[0, i]), int(pos_edges[1, i])) for i in range(pos_edges.shape[1])]
+        
+        # Get datasets in test split
+        test_datasets = set()
+        for u, v in test_pos:
+            u_type = node_metadata.get(str(u), {}).get("type") or node_metadata.get(u, {}).get("type")
+            v_type = node_metadata.get(str(v), {}).get("type") or node_metadata.get(v, {}).get("type")
+            if u_type == "dataset":
+                test_datasets.add(u)
+            elif v_type == "dataset":
+                test_datasets.add(v)
+        
+        # Get all model IDs
+        model_ids = {int(k) for k, v in node_metadata.items() if v.get("type") == "model"}
+        
+        # Generate negatives for test datasets
+        neg_edges = []
+        for did in test_datasets:
+            for mid in model_ids:
+                if (mid, did) not in all_pos and (did, mid) not in all_pos:
+                    neg_edges.append((mid, did))
+        
+        edges = test_pos + neg_edges
+        labels = [1] * len(test_pos) + [0] * len(neg_edges)
+        
+        # Shuffle
+        rng = random.Random(seed)
+        combined = list(zip(edges, labels))
+        rng.shuffle(combined)
+        edges, labels = zip(*combined) if combined else ([], [])
+        edges, labels = list(edges), list(labels)
+        
+        if max_pairs > 0:
+            edges, labels = edges[:max_pairs], labels[:max_pairs]
+        
+        return G, node_metadata, edges, labels
+
+    # Legacy: generate edges dynamically
+    edges, labels = prepare_link_prediction_data(G, seed=seed, max_pairs=max_pairs)
 
     if use_gnn_data:
         with open(gnn_data_path, "r") as f:
@@ -76,7 +175,11 @@ def load_prediction_data(
     return G, node_metadata, edges, labels
 
 
-def create_prediction_row(
+# =============================================================================
+# Row Creation
+# =============================================================================
+
+def create_link_prediction_row(
     model_id: int,
     dataset_id: int,
     true_label: int,
@@ -84,8 +187,8 @@ def create_prediction_row(
     predicted_label: Optional[int] = None,
     reason: str = "",
     status: str = "Failed",
-) -> PredictionRow:
-    """Create a standardized prediction result row."""
+) -> Dict[str, Any]:
+    """Create a standardized link prediction row."""
     return {
         "model_id": model_id,
         "dataset_id": dataset_id,
@@ -98,101 +201,82 @@ def create_prediction_row(
     }
 
 
-def save_predictions(
-    predictions: List[PredictionRow],
-    output_path: str | Path,
-    extra_data: Optional[Dict] = None,
-) -> Path:
-    """
-    Save predictions to a JSON file.
+# =============================================================================
+# Collect Valid Results
+# =============================================================================
 
-    Args:
-        predictions: List of prediction rows
-        output_path: Output file path
-        extra_data: Optional extra data to include
-
-    Returns:
-        Path to the saved file
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    serializable = convert_numpy_types(predictions)
-
-    if extra_data:
-        output_data = {"predictions": serializable, **convert_numpy_types(extra_data)}
-    else:
-        output_data = serializable
-
-    with output_path.open("w") as f:
-        json.dump(output_data, f, indent=2)
-
-    return output_path
-
-
-def collect_valid_predictions(
-    predictions: List[PredictionRow],
-) -> Tuple[List[int], List[int]]:
-    """
-    Extract y_true and y_pred from successful predictions.
-
-    Returns:
-        Tuple of (y_true, y_pred) lists
-    """
-    y_true, y_pred = [], []
+def collect_link_predictions(predictions: List[Dict]) -> Tuple[List[int], List[int], List[float]]:
+    """Extract y_true, y_pred, and y_score from successful predictions."""
+    y_true, y_pred, y_score = [], [], []
     for row in predictions:
         if row["status"] == "Success" and row["predicted_label"] is not None:
             y_true.append(row["true_label"])
             y_pred.append(row["predicted_label"])
-    return y_true, y_pred
+            # Use score if available, otherwise use predicted_label as score
+            score = row.get("score", row["predicted_label"])
+            y_score.append(float(score) if score is not None else float(row["predicted_label"]))
+    return y_true, y_pred, y_score
 
 
-def print_classification_metrics(
+# =============================================================================
+# Metrics
+# =============================================================================
+
+def compute_link_prediction_metrics(
     y_true: List[int],
     y_pred: List[int],
-    method_name: str = "Binary Classification",
+    y_score: Optional[List[float]] = None,
 ) -> Dict[str, float]:
-    """
-    Compute and print binary classification metrics.
-
-    Returns:
-        Dictionary of metrics
-    """
+    """Compute link prediction metrics (binary classification + AUC if scores available)."""
     if not y_pred:
-        print("No valid predictions produced.")
         return {}
-
+    
     metrics = evaluate_binary_classification(y_true, y_pred)
-
-    print(f"\n--- {method_name} Metrics ---")
-    for k, v in metrics.items():
-        print(f"  - {k.capitalize()}: {v:.4f}")
-    print("-" * (len(method_name) + 12))
-
+    
+    # Add AUC if scores are available
+    if y_score is not None and len(y_score) == len(y_true):
+        try:
+            from sklearn.metrics import roc_auc_score, average_precision_score
+            # Check if we have both classes
+            if len(set(y_true)) > 1:
+                metrics["auc"] = float(roc_auc_score(y_true, y_score))
+                metrics["average_precision"] = float(average_precision_score(y_true, y_score))
+        except Exception:
+            pass  # Skip AUC if calculation fails
+    
     return metrics
 
 
-def compute_degree_buckets(
-    predictions: List[PredictionRow],
-    G,
-) -> Dict[str, np.ndarray]:
-    """
-    Compute degree-based buckets for edge predictions.
+def print_link_prediction_metrics(
+    y_true: List[int],
+    y_pred: List[int],
+    y_score: Optional[List[float]] = None,
+    method_name: str = "Link Prediction",
+) -> Dict[str, float]:
+    """Compute and print link prediction metrics (same format as GNN)."""
+    metrics = compute_link_prediction_metrics(y_true, y_pred, y_score)
+    if not metrics:
+        print("No valid predictions.")
+        return {}
 
-    Args:
-        predictions: List of prediction rows
-        G: NetworkX graph
+    # Main metrics (same format as GNN evaluator)
+    auc = metrics.get("auc", 0.0)
+    f1 = metrics.get("f1", 0.0)
+    acc = metrics.get("accuracy", 0.0)
+    print(f"\n{method_name}_auc {auc:.4f} | {method_name}_f1 {f1:.4f} | {method_name}_acc {acc:.4f}")
+    
+    # Additional metrics
+    print(f"\n--- {method_name} Full Metrics ---")
+    for k, v in sorted(metrics.items()):
+        print(f"  {k}: {v:.4f}")
+    print("-" * 40)
+    return metrics
 
-    Returns:
-        Dictionary mapping bucket names to boolean masks
-    """
+
+def compute_degree_buckets(predictions: List[Dict], G) -> Dict[str, np.ndarray]:
+    """Compute degree-based buckets for predictions."""
     degrees = dict(G.degree())
-
-    valid_edges = []
-    for row in predictions:
-        if row["status"] == "Success":
-            valid_edges.append((row["model_id"], row["dataset_id"]))
-
+    valid_edges = [(r["model_id"], r["dataset_id"]) for r in predictions if r["status"] == "Success"]
     if not valid_edges:
         return {}
 
@@ -208,51 +292,43 @@ def compute_degree_buckets(
     }
 
 
-def print_degree_controlled_metrics(
-    predictions: List[PredictionRow],
-    G,
-    method_name: str = "Baseline",
-) -> Dict[str, float]:
-    """
-    Print degree-controlled performance metrics.
-
-    Returns:
-        Dictionary of bucket-level metrics
-    """
+def print_degree_metrics(predictions: List[Dict], G, method_name: str = "Baseline") -> Dict[str, float]:
+    """Print degree-controlled metrics."""
     from sklearn.metrics import accuracy_score, f1_score
 
-    y_true, y_pred = collect_valid_predictions(predictions)
+    y_true, y_pred, _ = collect_link_predictions(predictions)
     if not y_pred:
         return {}
 
-    y_true_np = np.array(y_true)
-    y_pred_np = np.array(y_pred)
-
+    y_true_np, y_pred_np = np.array(y_true), np.array(y_pred)
     buckets = compute_degree_buckets(predictions, G)
     if not buckets:
         return {}
 
-    print(f"\n--- Degree-Controlled Performance ({method_name}) ---")
+    print(f"\n--- Degree-Controlled ({method_name}) ---")
     metrics = {}
-
     for name, mask in buckets.items():
         if mask.sum() > 0:
-            sub_true = y_true_np[mask]
-            sub_pred = y_pred_np[mask]
-            sub_f1 = f1_score(sub_true, sub_pred, zero_division=0)
-            sub_acc = accuracy_score(sub_true, sub_pred)
-
-            print(f"  [{name}] N={mask.sum()} | F1: {sub_f1:.4f} | Acc: {sub_acc:.4f}")
-            metrics[f"f1_{name}"] = sub_f1
-            metrics[f"acc_{name}"] = sub_acc
-
+            f1 = f1_score(y_true_np[mask], y_pred_np[mask], zero_division=0)
+            acc = accuracy_score(y_true_np[mask], y_pred_np[mask])
+            print(f"  [{name}] N={mask.sum()} | F1: {f1:.4f} | Acc: {acc:.4f}")
+            metrics[f"f1_{name}"] = f1
+            metrics[f"acc_{name}"] = acc
     print("-" * 50)
     return metrics
 
 
-def create_safe_filename(name: str) -> str:
-    """Create a filesystem-safe filename from a string."""
-    # Replace problematic characters
-    safe = name.replace("/", "_").replace("\\", "_").replace(":", "_")
-    safe = safe.replace(" ", "_").replace(".", "_")
-    return safe
+# =============================================================================
+# Save
+# =============================================================================
+
+def save_link_predictions(predictions: List[Dict], output_path: str | Path) -> Path:
+    """Save link predictions to JSON."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w") as f:
+        json.dump(convert_numpy_types(predictions), f, indent=2)
+
+    print(f"💾 Saved: {output_path}")
+    return output_path

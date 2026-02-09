@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import networkx as nx
+
 from .evaluation_utils import (
     calculate_mae,
     calculate_mape,
@@ -15,8 +17,56 @@ from .evaluation_utils import (
 )
 from .link_prediction_utils import convert_numpy_types
 
+Edge = Tuple[int, int]
 
-def load_attribute_data(
+
+# =============================================================================
+# Data Preparation
+# =============================================================================
+
+def prepare_attribute_prediction_data(
+    G: nx.Graph,
+    metric_name: str | None = None,
+) -> Tuple[List[Edge], List[float], List[str]]:
+    """
+    Prepare attribute prediction dataset.
+    
+    Returns all model-dataset edges with their metric values.
+    """
+    edges_to_predict: List[Edge] = []
+    true_metrics: List[float] = []
+    metric_names: List[str] = []
+
+    for u, v, data in G.edges(data=True):
+        u_type, v_type = G.nodes[u].get("type"), G.nodes[v].get("type")
+
+        if u_type == "model" and v_type == "dataset":
+            edge = (u, v)
+        elif v_type == "model" and u_type == "dataset":
+            edge = (v, u)
+        else:
+            continue
+
+        if metric_name is not None:
+            if metric_name in data:
+                edges_to_predict.append(edge)
+                true_metrics.append(float(data[metric_name]))
+                metric_names.append(metric_name)
+        else:
+            for key, value in data.items():
+                if isinstance(value, (int, float)):
+                    edges_to_predict.append(edge)
+                    true_metrics.append(float(value))
+                    metric_names.append(key)
+
+    return edges_to_predict, true_metrics, metric_names
+
+
+# =============================================================================
+# Data Loading
+# =============================================================================
+
+def load_attribute_prediction_data(
     graph_data_dir: str | Path,
     metric_name: str | None = None,
     use_gnn_data: bool = False,
@@ -26,13 +76,12 @@ def load_attribute_data(
     Load graph and prepare attribute prediction data.
 
     Returns:
-        Tuple of (G, node_metadata, edge_metadata, edges, true_metrics, metric_names)
+        Tuple of (G, node_metadata, edge_metadata, edges, true_metrics, metric_names).
     """
     from .graph_builder import load_nx_graph
-    from .graph_utils import prepare_attribute_predictor_dataset
 
     G, node_metadata, edge_metadata = load_nx_graph(graph_data_dir=str(graph_data_dir))
-    edges, true_metrics, metric_names = prepare_attribute_predictor_dataset(G, metric_name)
+    edges, true_metrics, metric_names = prepare_attribute_prediction_data(G, metric_name)
 
     if use_gnn_data:
         metric_names = []
@@ -60,7 +109,11 @@ def load_attribute_data(
     return G, node_metadata, edge_metadata, edges, true_metrics, metric_names
 
 
-def create_attribute_row(
+# =============================================================================
+# Row Creation
+# =============================================================================
+
+def create_attribute_prediction_row(
     model_id: int,
     dataset_id: int,
     metric_name: str,
@@ -84,9 +137,11 @@ def create_attribute_row(
     }
 
 
-def collect_valid_attribute_predictions(
-    predictions: List[Dict],
-) -> Tuple[List[float], List[float]]:
+# =============================================================================
+# Collect Valid Results
+# =============================================================================
+
+def collect_attribute_predictions(predictions: List[Dict]) -> Tuple[List[float], List[float]]:
     """Extract valid predictions and ground truth."""
     pred_values, true_values = [], []
     for row in predictions:
@@ -96,11 +151,17 @@ def collect_valid_attribute_predictions(
     return pred_values, true_values
 
 
-def compute_regression_metrics(
+# =============================================================================
+# Metrics
+# =============================================================================
+
+def compute_attribute_prediction_metrics(
     predictions: List[float],
     ground_truth: List[float],
 ) -> Dict[str, float]:
-    """Compute regression metrics."""
+    """Compute attribute prediction metrics (regression)."""
+    if not predictions:
+        return {}
     return {
         "mse": calculate_mse(predictions, ground_truth),
         "mae": calculate_mae(predictions, ground_truth),
@@ -110,18 +171,18 @@ def compute_regression_metrics(
     }
 
 
-def print_regression_metrics(
+def print_attribute_prediction_metrics(
     predictions: List[float],
     ground_truth: List[float],
-    method_name: str = "Regression",
+    method_name: str = "Attribute Prediction",
     total_count: int | None = None,
-):
-    """Print regression metrics."""
-    if not predictions:
-        print("No valid predictions produced.")
+) -> Dict[str, float]:
+    """Compute and print attribute prediction metrics."""
+    metrics = compute_attribute_prediction_metrics(predictions, ground_truth)
+    if not metrics:
+        print("No valid predictions.")
         return {}
 
-    metrics = compute_regression_metrics(predictions, ground_truth)
     total = total_count or len(predictions)
 
     print(f"\n--- {method_name} Metrics ---")
@@ -137,10 +198,11 @@ def print_regression_metrics(
     return metrics
 
 
-def save_attribute_predictions(
-    predictions: List[Dict],
-    output_path: str | Path,
-) -> Path:
+# =============================================================================
+# Save
+# =============================================================================
+
+def save_attribute_predictions(predictions: List[Dict], output_path: str | Path) -> Path:
     """Save attribute predictions to JSON."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

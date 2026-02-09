@@ -11,20 +11,22 @@ from artifact_graph.runners.attribute_runner import AttributeConfig
 
 def main():
     p = argparse.ArgumentParser(description="LLM Attribute Prediction")
-    p.add_argument("--data-dir", default="output/artifact_graph_data")
-    p.add_argument("--output-dir", default="output/final_results")
+    p.add_argument("--data-dir", default="../data/artifact_graph_data_v2_1125")
+    p.add_argument("--split-dir", default="../data/artifact_graph_splits_v2_1125_transductive",
+                   help="Split directory (uses same test set as GNN)")
+    p.add_argument("--output-dir", default="../data/final_results")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--model", default="openai/gpt-4o")
     p.add_argument("--hops", type=int, default=1)
     p.add_argument("--no-info", action="store_false", dest="use_info")
     p.add_argument("--max-pairs", type=int, default=10)
     p.add_argument("--workers", type=int, default=4)
-    p.add_argument("--use-gnn-data", action="store_true")
     args = p.parse_args()
 
     config = AttributeConfig(
         method="llm",
         data_dir=args.data_dir,
+        split_dir=args.split_dir,
         output_dir=args.output_dir,
         seed=args.seed,
         llm_model=args.model,
@@ -32,7 +34,6 @@ def main():
         use_info=args.use_info,
         max_pairs=args.max_pairs,
         workers=args.workers,
-        use_gnn_data=args.use_gnn_data,
     )
     run_attribute_prediction(config)
 

@@ -8,15 +8,19 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.utils import degree
 
-from .gnn_link_predictor import GNNLinkPredictor
-from .gnn_evaluator import GNNEvaluator
+from ..models.gnn_link_predictor import GNNLinkPredictor
+from .gnn_link_evaluator import GNNLinkEvaluator
+
+# Supported model types for link prediction
+LINK_MODEL_TYPES = ("gatv2", "gcn", "ncn", "ncnc", "neognn", "buddy")
 
 
 @dataclass
-class TrainingConfig:
+class LinkTrainingConfig:
     """Configuration for GNN training."""
     epochs: int = 300
     eval_every: int = 50
@@ -26,16 +30,18 @@ class TrainingConfig:
     lr_patience: int = 10
     amp: bool = False
     seed: int = 42
+    threshold: float = 0.5  # probability threshold for binary classification (F1, precision, recall)
 
 
 @dataclass
-class ModelConfig:
+class LinkModelConfig:
     """Configuration for GNN model."""
     in_channels: int
     hidden_channels: int = 64
     num_layers: int = 3
     heads: int = 3
     dropout: float = 0.2
+    model_type: str = "gatv2"  # one of LINK_MODEL_TYPES
 
 
 def set_seed(seed: int = 42):
@@ -62,19 +68,23 @@ def bce_logits_loss(
     return F.binary_cross_entropy_with_logits(logits, y, pos_weight=w)
 
 
-class GNNTrainer:
-    """Trainer for GNN link prediction models."""
+class GNNLinkTrainer:
+    """Trainer for GNN link prediction models.
+
+    Works with any model that exposes ``encode(x, edge_index)`` and
+    ``decode(z, edge_index)`` methods (GNNLinkPredictor, NCN, Neo-GNN, BUDDY, …).
+    """
 
     def __init__(
         self,
-        model: GNNLinkPredictor,
+        model: nn.Module,
         device: torch.device,
-        config: TrainingConfig,
+        config: LinkTrainingConfig,
     ):
         self.model = model
         self.device = device
         self.config = config
-        self.evaluator = GNNEvaluator()
+        self.evaluator = GNNLinkEvaluator(threshold=config.threshold)
 
         # Initialize optimizer and scheduler
         self.optimizer = torch.optim.AdamW(
@@ -88,10 +98,9 @@ class GNNTrainer:
             factor=0.8,
             patience=config.lr_patience,
             min_lr=1e-6,
-            verbose=False,
         )
-        self.scaler = torch.cuda.amp.GradScaler(
-            enabled=config.amp and device.type == "cuda"
+        self.scaler = torch.amp.GradScaler(
+            'cuda', enabled=config.amp and device.type == "cuda"
         )
 
         # Training state
@@ -108,7 +117,7 @@ class GNNTrainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=self.scaler.is_enabled()):
+        with torch.amp.autocast('cuda', enabled=self.scaler.is_enabled()):
             z = self.model.encode(data.x, split.edge_index)
             pos = self.model.decode(z, split.pos_edge_label_index)
             neg = self.model.decode(z, split.neg_edge_label_index)
@@ -208,10 +217,12 @@ class GNNTrainer:
 
         print(
             f"epoch {epoch:04d} | loss {loss:.4f} | "
-            f"val_auc {val_metrics['auc']:.4f} | val_f1 {val_metrics['f1']:.4f}{bucket_info}"
+            f"val_auc {val_metrics['auc']:.4f} | val_f1 {val_metrics['f1']:.4f} | "
+            f"val_prec {val_metrics['precision']:.4f} | val_rec {val_metrics['recall']:.4f}"
+            f"{bucket_info}"
         )
 
-    def save_model(self, path: str | Path, model_config: ModelConfig):
+    def save_model(self, path: str | Path, model_config: LinkModelConfig):
         """Save model checkpoint."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,6 +235,7 @@ class GNNTrainer:
                     "num_layers": model_config.num_layers,
                     "heads": model_config.heads,
                     "dropout": model_config.dropout,
+                    "model_type": model_config.model_type,
                 },
                 "model_state_dict": self.model.state_dict(),
                 "best_val_metrics": self.best_metrics,
@@ -233,13 +245,71 @@ class GNNTrainer:
         return path
 
 
-def build_model(config: ModelConfig, device: torch.device) -> GNNLinkPredictor:
-    """Build GNN model from config."""
-    model = GNNLinkPredictor(
-        in_channels=config.in_channels,
-        hidden_channels=config.hidden_channels,
-        num_layers=config.num_layers,
-        heads=config.heads,
-        dropout=config.dropout,
-    ).to(device)
-    return model
+def build_link_model(config: LinkModelConfig, device: torch.device) -> nn.Module:
+    """Build a link-prediction model from config (factory).
+
+    Supports: gatv2, gcn, ncn, ncnc, neognn, buddy.
+    """
+    mt = config.model_type
+
+    if mt in ("gatv2", "gcn"):
+        model: nn.Module = GNNLinkPredictor(
+            in_channels=config.in_channels,
+            hidden_channels=config.hidden_channels,
+            num_layers=config.num_layers,
+            heads=config.heads,
+            dropout=config.dropout,
+            backbone=mt,
+        )
+    elif mt in ("ncn", "ncnc"):
+        from ..models.ncn_link_predictor import NCNLinkPredictor
+        model = NCNLinkPredictor(
+            in_channels=config.in_channels,
+            hidden_channels=config.hidden_channels,
+            num_layers=config.num_layers,
+            dropout=config.dropout,
+            use_completion=(mt == "ncnc"),
+        )
+    elif mt == "neognn":
+        from ..models.neognn_link_predictor import NeoGNNLinkPredictor
+        model = NeoGNNLinkPredictor(
+            in_channels=config.in_channels,
+            hidden_channels=config.hidden_channels,
+            num_layers=config.num_layers,
+            dropout=config.dropout,
+        )
+    elif mt == "buddy":
+        from ..models.buddy_link_predictor import BUDDYLinkPredictor
+        model = BUDDYLinkPredictor(
+            in_channels=config.in_channels,
+            hidden_channels=config.hidden_channels,
+            num_layers=config.num_layers,
+            dropout=config.dropout,
+        )
+    else:
+        raise ValueError(
+            f"Unknown model_type '{mt}'. Choose from {LINK_MODEL_TYPES}"
+        )
+
+    return model.to(device)
+
+
+def load_link_model(
+    path: str | Path,
+    device: torch.device,
+) -> tuple[nn.Module, Dict[str, float]]:
+    """Load a saved link-prediction model checkpoint.
+
+    Returns:
+        (model, best_val_metrics)
+    """
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    cfg_dict = dict(ckpt["model_config"])
+    # Backward compatibility: old checkpoints may lack model_type
+    if "model_type" not in cfg_dict:
+        cfg_dict["model_type"] = "gatv2"
+    model_cfg = LinkModelConfig(**cfg_dict)
+    model = build_link_model(model_cfg, device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+    return model, ckpt.get("best_val_metrics", {})

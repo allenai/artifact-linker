@@ -109,9 +109,8 @@ def build_link_config(args, method: str) -> LinkConfig:
         )
     
     # Task-specific
-    kwargs["max_pairs"] = getattr(args, "max_pairs", 5000)
-    kwargs["max_datasets"] = getattr(args, "max_datasets", 0)
-    kwargs["candidates_per_dataset"] = getattr(args, "candidates_per_dataset", 10)
+    kwargs["max_pairs"] = getattr(args, "max_pairs", 0)  # 0 = all pairs
+    kwargs["max_datasets"] = getattr(args, "max_datasets", 0)  # 0 = all datasets
     
     return LinkConfig(**kwargs)
 
@@ -207,8 +206,7 @@ def main():
     for method in ["gnn", "llm", "baseline"]:
         p = rank_link_sub.add_parser(method)
         add_common_args(p)
-        p.add_argument("--max-datasets", type=int, default=0)
-        p.add_argument("--candidates-per-dataset", type=int, default=10)
+        p.add_argument("--max-datasets", type=int, default=0, help="0 = all datasets")
         if method == "gnn":
             p.add_argument("--split-dir", default="output/artifact_graph_splits")
             p.add_argument("--model-path", required=True)

@@ -8,41 +8,34 @@ from .llm_link_predictor import LLMLinkPredictor
 from .llm_link_ranker import LLMLinkRanker
 from .random_baseline import RandomBaseline
 
-# GNN models
+# GNN models (architecture only – trainers/evaluators are in artifact_graph.training)
 try:
     from .gnn_link_predictor import GNNLinkPredictor
-    from .gnn_evaluator import GNNEvaluator
-    from .gnn_trainer import GNNTrainer, ModelConfig, TrainingConfig, build_model
+    from .ncn_link_predictor import NCNLinkPredictor
+    from .neognn_link_predictor import NeoGNNLinkPredictor
+    from .buddy_link_predictor import BUDDYLinkPredictor
 
     GNN_AVAILABLE = True
-    __all__ = [
-        "LLMLinkPredictor",
-        "LLMAttributePredictor", 
-        "LLMLinkRanker",
-        "LLMAttributeRanker",
-        "BaselineLinkPredictor",
-        "BaselineLinkRanker",
-        "BaselineAttributePredictor",
-        "BaselineAttributeRanker",
-        "RandomBaseline",
-        "GNNLinkPredictor",
-        "GNNEvaluator",
-        "GNNTrainer",
-        "ModelConfig",
-        "TrainingConfig",
-        "build_model",
-    ]
 except ImportError as e:
     print(f"Warning: GNN models not available: {e}")
     GNN_AVAILABLE = False
-    __all__ = [
-        "LLMLinkPredictor",
-        "LLMAttributePredictor",
-        "LLMLinkRanker", 
-        "LLMAttributeRanker",
-        "BaselineLinkPredictor",
-        "BaselineLinkRanker",
-        "BaselineAttributePredictor",
-        "BaselineAttributeRanker",
-        "RandomBaseline",
-    ]
+
+__all__ = [
+    "LLMLinkPredictor",
+    "LLMAttributePredictor",
+    "LLMLinkRanker",
+    "LLMAttributeRanker",
+    "BaselineLinkPredictor",
+    "BaselineLinkRanker",
+    "BaselineAttributePredictor",
+    "BaselineAttributeRanker",
+    "RandomBaseline",
+]
+
+if GNN_AVAILABLE:
+    __all__.extend([
+        "GNNLinkPredictor",
+        "NCNLinkPredictor",
+        "NeoGNNLinkPredictor",
+        "BUDDYLinkPredictor",
+    ])
