@@ -13,11 +13,8 @@ Interface:
     encode(x, edge_index, num_nodes=None) → z   (also caches adjacency & sketches)
     decode(z, edge_index) → logits               (uses cached sketches)
 
-Performance:
-    Adjacency is stored as a scipy CSR sparse matrix with caching across epochs.
-    Per-node sketches are pre-computed once during ``encode`` using vectorised
-    numpy operations. Edge-level sketch lookup in ``decode`` uses numpy fancy
-    indexing (no Python per-edge loop).
+Now uses the shared GNNEncoder backbone so that all models have aligned
+parameter counts and the comparison is fair.
 """
 from __future__ import annotations
 
@@ -25,8 +22,8 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GraphNorm
+
+from .gnn_encoder import GNNEncoder
 
 
 class BUDDYLinkPredictor(nn.Module):
@@ -36,8 +33,10 @@ class BUDDYLinkPredictor(nn.Module):
     Args:
         in_channels:      Input feature dimension.
         hidden_channels:  Hidden layer dimension.
-        num_layers:       Number of GCN encoder layers.
+        num_layers:       Number of encoder layers.
+        heads:            Number of attention heads (GATv2 only).
         dropout:          Dropout rate.
+        backbone:         ``"gatv2"`` or ``"gcn"`` — shared encoder type.
         sketch_dim:       Dimensionality of each MinHash sketch vector.
     """
 
@@ -45,47 +44,50 @@ class BUDDYLinkPredictor(nn.Module):
         self,
         in_channels: int,
         hidden_channels: int = 64,
-        num_layers: int = 2,
+        num_layers: int = 3,
+        heads: int = 4,
         dropout: float = 0.2,
+        backbone: str = "gatv2",
         sketch_dim: int = 32,
     ):
         super().__init__()
-        self.hidden_channels = hidden_channels
-        self.dropout = dropout
         self.sketch_dim = sketch_dim
+        self.dropout = dropout
 
-        # ---- GCN encoder ----
-        self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
-        self.convs.append(GCNConv(in_channels, hidden_channels, normalize=True))
-        self.norms.append(GraphNorm(hidden_channels))
-        for _ in range(num_layers - 1):
-            self.convs.append(GCNConv(hidden_channels, hidden_channels, normalize=True))
-            self.norms.append(GraphNorm(hidden_channels))
+        # ---- Shared GNN encoder ----
+        self.encoder = GNNEncoder(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            heads=heads,
+            dropout=dropout,
+            backbone=backbone,
+        )
+        h = self.encoder.out_channels
 
         # ---- Sketch encoder ----
         self.sketch_encoder = nn.Sequential(
-            nn.Linear(sketch_dim * 2, hidden_channels),  # src_sketch + dst_sketch
+            nn.Linear(sketch_dim * 2, h),  # src_sketch + dst_sketch
             nn.ReLU(),
-            nn.Linear(hidden_channels, hidden_channels),
+            nn.Linear(h, h),
         )
 
         # ---- Node feature encoder ----
         self.node_encoder = nn.Sequential(
-            nn.Linear(hidden_channels * 2, hidden_channels),
+            nn.Linear(h * 2, h),
             nn.ReLU(),
         )
 
         # ---- Final predictor ----
         self.predictor = nn.Sequential(
-            nn.Linear(hidden_channels * 2, hidden_channels),  # node_feat + sketch_feat
+            nn.Linear(h * 2, h),  # node_feat + sketch_feat
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_channels, 1),
+            nn.Linear(h, 1),
         )
 
         # Cached adjacency & per-node sketches
-        self._node_sketches: np.ndarray | None = None  # (num_nodes, sketch_dim)
+        self._node_sketches: np.ndarray | None = None
         self._num_nodes: int = 0
         self._cache_key: tuple | None = None
 
@@ -112,14 +114,11 @@ class BUDDYLinkPredictor(nn.Module):
         sd = self.sketch_dim
         sketches = np.zeros((num_nodes, sd), dtype=np.float32)
 
-        # For each node, compute MinHash over its neighbors
-        # Use CSR structure for efficient neighbor access
         for node in range(num_nodes):
             start, end = A.indptr[node], A.indptr[node + 1]
             if start == end:
                 continue
             neighbors = A.indices[start:end].astype(np.int64)
-            # Vectorised: (sketch_dim, num_neighbors) hash values
             hashes = (self._hash_a[:, None] * neighbors[None, :] + self._hash_b[:, None]) % self._hash_p
             sketches[node] = hashes.min(axis=1) / float(self._hash_p)
 
@@ -132,7 +131,6 @@ class BUDDYLinkPredictor(nn.Module):
         assert self._node_sketches is not None
         src = pred_edges[0].cpu().numpy()
         dst = pred_edges[1].cpu().numpy()
-        # Fancy indexing: (batch, sketch_dim) each, then hstack → (batch, 2*sketch_dim)
         src_sk = self._node_sketches[src]
         dst_sk = self._node_sketches[dst]
         combined = np.concatenate([src_sk, dst_sk], axis=1)
@@ -143,14 +141,9 @@ class BUDDYLinkPredictor(nn.Module):
     # --------------------------------------------------------------------- #
     def encode(self, x: torch.Tensor, edge_index: torch.Tensor, num_nodes: int | None = None) -> torch.Tensor:
         n = num_nodes or x.size(0)
-        h = x
-        for conv, norm in zip(self.convs, self.norms):
-            h = conv(h, edge_index)
-            h = norm(h)
-            h = F.relu(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+        z = self.encoder(x, edge_index, num_nodes=num_nodes)
         self._maybe_rebuild_sketches(edge_index, n)
-        return h
+        return z
 
     def decode(self, z: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         src, dst = z[edge_index[0]], z[edge_index[1]]

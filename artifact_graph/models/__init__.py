@@ -6,6 +6,8 @@ from .llm_attribute_predictor import LLMAttributePredictor
 from .llm_attribute_ranker import LLMAttributeRanker
 from .llm_link_predictor import LLMLinkPredictor
 from .llm_link_ranker import LLMLinkRanker
+from .reranker_link_predictor import RerankerLinkPredictor
+from .reranker_link_ranker import RerankerLinkRanker
 from .random_baseline import RandomBaseline
 
 # GNN models (architecture only – trainers/evaluators are in artifact_graph.training)
@@ -14,6 +16,7 @@ try:
     from .ncn_link_predictor import NCNLinkPredictor
     from .neognn_link_predictor import NeoGNNLinkPredictor
     from .buddy_link_predictor import BUDDYLinkPredictor
+    from .gnn_sota_finder import SOTAFinder
 
     GNN_AVAILABLE = True
 except ImportError as e:
@@ -25,6 +28,8 @@ __all__ = [
     "LLMAttributePredictor",
     "LLMLinkRanker",
     "LLMAttributeRanker",
+    "RerankerLinkPredictor",
+    "RerankerLinkRanker",
     "BaselineLinkPredictor",
     "BaselineLinkRanker",
     "BaselineAttributePredictor",
@@ -38,4 +43,5 @@ if GNN_AVAILABLE:
         "NCNLinkPredictor",
         "NeoGNNLinkPredictor",
         "BUDDYLinkPredictor",
+        "SOTAFinder",
     ])

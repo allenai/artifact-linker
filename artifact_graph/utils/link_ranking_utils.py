@@ -6,120 +6,49 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import networkx as nx
-
 from .evaluation_utils import (
     calculate_mrr,
     calculate_ndcg,
     calculate_precision_at_k,
     calculate_recall_at_k,
 )
-from .link_prediction_utils import convert_numpy_types
-
-
-# =============================================================================
-# Data Preparation
-# =============================================================================
-
-def prepare_link_ranker_dataset(G: nx.Graph) -> Dict[int, Tuple[List[int], List[int]]]:
-    """
-    Prepare link ranking dataset using ALL models as candidates.
-    
-    For each dataset:
-    - Positives: Models with edges to this dataset.
-    - Negatives: ALL other models.
-
-    Returns:
-        Dict mapping dataset_id to (positive_models, negative_models).
-    """
-    models = set(n for n, d in G.nodes(data=True) if d.get("type") == "model")
-    datasets = [n for n, d in G.nodes(data=True) if d.get("type") == "dataset"]
-
-    ranking_data = {}
-    for dataset_id in datasets:
-        positive_models = [
-            n for n in G.neighbors(dataset_id)
-            if G.nodes[n].get("type") == "model"
-        ]
-        if positive_models:
-            negative_models = list(models - set(positive_models))
-            ranking_data[dataset_id] = (positive_models, negative_models)
-
-    return ranking_data
-
+from .graph_utils import (
+    collect_all_split_positives,
+    load_link_graph_from_split,
+    get_all_model_ids,
+    get_test_edges_by_dataset,
+    convert_numpy_types,
+)
 
 # =============================================================================
 # Data Loading
 # =============================================================================
 
 def load_link_ranking_data(
-    graph_data_dir: str | Path,
-    use_gnn_data: bool = False,
-    gnn_data_path: str = "output/final_results/gnn_link_rankings.json",
-    split_dir: str | Path | None = None,
+    split_dir: str | Path,
 ) -> Tuple[Any, Dict, Dict]:
     """
     Load graph and prepare link ranking data.
     
-    Uses ALL models as candidates (full negative).
-    If split_dir is provided, only uses test split datasets for fair comparison.
+    Uses ALL models as candidates (full negative) for test datasets in split_dir.
 
     Returns:
         Tuple of (G, node_metadata, ranking_data).
     """
-    import numpy as np
-    from .graph_builder import load_nx_graph
+    split_dir_path = Path(split_dir)
+    G, node_metadata = load_link_graph_from_split(split_dir_path)
 
-    G, node_metadata, _ = load_nx_graph(graph_data_dir=str(graph_data_dir))
+    all_pos_by_ds, _ = collect_all_split_positives(split_dir_path, node_metadata)
+    _, test_pos_by_ds, _ = get_test_edges_by_dataset(split_dir_path, node_metadata)
+    all_models = get_all_model_ids(node_metadata)
 
-    if use_gnn_data:
-        with open(gnn_data_path, "r") as f:
-            gnn_data = json.load(f)
-        ranking_data = {}
-        for result in gnn_data["detailed_rankings_by_dataset"]:
-            dataset_id = result["dataset_id"]
-            pos = [c["model_id"] for c in result["ranked_candidates"] if c["ground_truth_label"]]
-            neg = [c["model_id"] for c in result["ranked_candidates"] if not c["ground_truth_label"]]
-            ranking_data[dataset_id] = (pos, neg)
-    elif split_dir:
-        # Use only test split datasets for fair comparison with GNN
-        split_dir = Path(split_dir)
-        test_pos = np.load(split_dir / "test_split" / "pos_edges.npz")["edges"]
-        
-        # Build test positive edges by dataset
-        test_pos_by_ds = {}
-        for i in range(test_pos.shape[1]):
-            u, v = int(test_pos[0, i]), int(test_pos[1, i])
-            ut = G.nodes.get(u, {}).get("type")
-            vt = G.nodes.get(v, {}).get("type")
-            if ut == "dataset" and vt == "model":
-                test_pos_by_ds.setdefault(u, set()).add(v)
-            elif ut == "model" and vt == "dataset":
-                test_pos_by_ds.setdefault(v, set()).add(u)
-        
-        # Build all positive edges by dataset (from full graph)
-        all_pos_by_ds = {}
-        for u, v in G.edges():
-            ut = G.nodes[u].get("type")
-            vt = G.nodes[v].get("type")
-            if ut == "dataset" and vt == "model":
-                all_pos_by_ds.setdefault(u, set()).add(v)
-            elif ut == "model" and vt == "dataset":
-                all_pos_by_ds.setdefault(v, set()).add(u)
-        
-        # Get all models for negative candidates
-        all_models = {n for n, d in G.nodes(data=True) if d.get("type") == "model"}
-        
-        # Build ranking data: only datasets in test split
-        ranking_data = {}
-        for did, pos_models in test_pos_by_ds.items():
-            neg_models = list(all_models - all_pos_by_ds.get(did, set()))
-            if neg_models:
-                ranking_data[did] = (list(pos_models), neg_models)
-        
-        print(f"Using test split: {len(ranking_data)} datasets (from {len(test_pos_by_ds)} in test)")
-    else:
-        ranking_data = prepare_link_ranker_dataset(G)
+    ranking_data = {}
+    for did, pos_models in test_pos_by_ds.items():
+        neg_models = list(all_models - all_pos_by_ds.get(did, set()))
+        if neg_models:
+            ranking_data[did] = (list(pos_models), neg_models)
+    
+    print(f"Using test split: {len(ranking_data)} datasets (from {len(test_pos_by_ds)} in test)")
 
     return G, node_metadata, ranking_data
 
@@ -215,13 +144,36 @@ def print_link_ranking_metrics(results: List[Dict], method_name: str = "Link Ran
 # Save
 # =============================================================================
 
-def save_link_rankings(results: List[Dict], output_path: str | Path) -> Path:
-    """Save link rankings to JSON."""
+def save_link_rankings(results, output_path: str | Path) -> Path:
+    """Save link rankings to JSON.
+
+    For large result sets, saves only summary metrics to avoid multi-hundred-MB files.
+    Accepts either a list of ranking dicts or a dict with a 'results' key.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with output_path.open("w") as f:
-        json.dump(convert_numpy_types(results), f, indent=2)
+    # Extract the ranking list for metric computation
+    if isinstance(results, dict) and "results" in results:
+        ranking_list = results["results"]
+    elif isinstance(results, list):
+        ranking_list = results
+    else:
+        ranking_list = []
+
+    if len(ranking_list) > 100:
+        metrics = compute_link_ranking_metrics(ranking_list)
+        valid_count = len(collect_link_rankings(ranking_list))
+        summary = {
+            "test_metrics": metrics,
+            "num_queries": len(ranking_list),
+            "num_valid": valid_count,
+        }
+        with output_path.open("w") as f:
+            json.dump(summary, f, indent=2)
+    else:
+        with output_path.open("w") as f:
+            json.dump(convert_numpy_types(results), f, indent=2)
 
     print(f"💾 Saved: {output_path}")
     return output_path

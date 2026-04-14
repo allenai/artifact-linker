@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 import networkx as nx
 
 from artifact_graph.utils.llm_client import call_llm
 from artifact_graph.utils.llm_response_parser import parse_llm_response_to_json
+
+# Neighbor tuple: (name, metrics_dict, edge_meta, info)
+NeighborInfo = Tuple[str, Dict[str, float], dict, str]
 
 
 class LLMAttributeRanker:
@@ -18,6 +21,140 @@ class LLMAttributeRanker:
         self.model_name = model_name
         self.hop_number = hop_number
         self.use_info = use_info
+
+    # ------------------------------------------------------------------
+    # Neighbor collection helpers (symmetric for model / dataset sides)
+    # ------------------------------------------------------------------
+
+    # Simple neighbor info: (name, info)
+    SimpleNeighborInfo = Tuple[str, str]
+
+    def _get_model_dataset_neighbors(
+        self,
+        G: nx.Graph,
+        node_metadata: dict,
+        edge_metadata: dict,
+        model_id: int,
+        metric_name: str,
+        exclude_ids: Set[int] | None = None,
+        max_neighbors: int = 3,
+    ) -> List[NeighborInfo]:
+        """Collect datasets connected to *model_id* (model-side 1-hop).
+
+        Returns list of ``(dataset_name, metrics_dict, edge_meta, dataset_info)``
+        for each neighbouring dataset that carries at least one numeric metric.
+        """
+        if self.hop_number <= 0:
+            return []
+
+        exclude = exclude_ids or set()
+        neighbors: List[NeighborInfo] = []
+
+        for nbr_id in G.neighbors(model_id):
+            if len(neighbors) >= max_neighbors:
+                break
+            if nbr_id in exclude or G.nodes[nbr_id].get("type") != "dataset":
+                continue
+
+            metrics = self._collect_edge_metrics(G, model_id, nbr_id, metric_name)
+            if not metrics:
+                continue
+
+            edge_key = tuple(sorted((model_id, nbr_id)))
+            neighbors.append((
+                node_metadata.get(nbr_id, {}).get("name", str(nbr_id)),
+                metrics,
+                edge_metadata.get(edge_key, {}),
+                node_metadata.get(nbr_id, {}).get("info", ""),
+            ))
+
+        return neighbors
+
+    def _get_dataset_model_neighbors(
+        self,
+        G: nx.Graph,
+        node_metadata: dict,
+        edge_metadata: dict,
+        dataset_id: int,
+        metric_name: str,
+        exclude_ids: Set[int] | None = None,
+        max_neighbors: int = 10,
+    ) -> List[NeighborInfo]:
+        """Collect models connected to *dataset_id* (dataset-side 1-hop).
+
+        Returns list of ``(model_name, metrics_dict, edge_meta, model_info)``
+        for each neighbouring model that carries at least one numeric metric.
+        """
+        if self.hop_number <= 0:
+            return []
+
+        exclude = exclude_ids or set()
+        neighbors: List[NeighborInfo] = []
+
+        for nbr_id in G.neighbors(dataset_id):
+            if len(neighbors) >= max_neighbors:
+                break
+            if nbr_id in exclude or G.nodes[nbr_id].get("type") != "model":
+                continue
+
+            metrics = self._collect_edge_metrics(G, nbr_id, dataset_id, metric_name)
+            if not metrics:
+                continue
+
+            edge_key = tuple(sorted((nbr_id, dataset_id)))
+            neighbors.append((
+                node_metadata.get(nbr_id, {}).get("name", str(nbr_id)),
+                metrics,
+                edge_metadata.get(edge_key, {}),
+                node_metadata.get(nbr_id, {}).get("info", ""),
+            ))
+
+        return neighbors
+
+    def _get_simple_neighbors(
+        self,
+        G: nx.Graph,
+        node_metadata: dict,
+        node_id: int,
+        target_type: str,
+        max_neighbors: int = 3,
+    ) -> List[Tuple[str, str]]:
+        """Collect neighbors of a given type as (name, info) pairs."""
+        if self.hop_number <= 0:
+            return []
+        neighbors = []
+        for nbr_id in G.neighbors(node_id):
+            if len(neighbors) >= max_neighbors:
+                break
+            if G.nodes[nbr_id].get("type") != target_type:
+                continue
+            neighbors.append((
+                node_metadata.get(nbr_id, {}).get("name", str(nbr_id)),
+                node_metadata.get(nbr_id, {}).get("info", ""),
+            ))
+        return neighbors
+
+    @staticmethod
+    def _collect_edge_metrics(
+        G: nx.Graph, u: int, v: int, target_metric: str,
+    ) -> Dict[str, float]:
+        """Extract numeric metrics from the edge (u, v), target metric first."""
+        edge_attrs = G.edges[u, v]
+        metrics: Dict[str, float] = {}
+
+        # Target metric goes first
+        if target_metric and target_metric in edge_attrs:
+            metrics[target_metric] = edge_attrs[target_metric]
+
+        for key, val in edge_attrs.items():
+            if isinstance(val, (int, float)) and key != target_metric:
+                metrics[key] = val
+
+        return metrics
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def rank(
         self,
@@ -50,55 +187,49 @@ class LLMAttributeRanker:
             models_shuffled = models_to_rank.copy()
             random.shuffle(models_shuffled)
 
-            # Extract model information and their neighbors
+            model_ids_ranked = {mid for mid, _ in models_shuffled}
+
+            # --- Model-side neighbours (per model) ---
             model_info_map = {}
             for model_id, true_value in models_shuffled:
-                model_name = node_metadata.get(model_id, {}).get("name")
-                model_info_text = node_metadata.get(model_id, {}).get("info")
-
-                # Get model neighbors if hop_number > 0 (limit to 3 neighbors max)
-                model_neighbors = None
-                if self.hop_number > 0:
-                    model_neighbors = []
-                    for neighbor_id in G.neighbors(model_id):
-                        if len(model_neighbors) >= 3:  # Limit to 3 neighbors
-                            break
-
-                        edge_key = tuple(sorted((model_id, neighbor_id)))
-                        if (
-                            neighbor_id != dataset_id
-                            and G.nodes[neighbor_id].get("type") == "dataset"
-                        ):
-                            neighbor_name = node_metadata.get(neighbor_id, {}).get("name")
-                            edge_attrs = G.edges[model_id, neighbor_id]
-                            edge_meta = edge_metadata.get(edge_key, {})
-
-                            all_metrics = {}
-                            if metric_name and metric_name in edge_attrs:
-                                all_metrics[metric_name] = edge_attrs[metric_name]
-
-                            for metric_key, metric_value in edge_attrs.items():
-                                if (
-                                    isinstance(metric_value, (int, float))
-                                    and metric_key != metric_name
-                                ):
-                                    all_metrics[metric_key] = metric_value
-
-                            if all_metrics:
-                                neighbor_info = node_metadata.get(neighbor_id, {}).get("info", "")
-                                model_neighbors.append(
-                                    (neighbor_name, all_metrics, edge_meta, neighbor_info)
-                                )
-
+                model_neighbors = self._get_model_dataset_neighbors(
+                    G, node_metadata, edge_metadata, model_id, metric_name,
+                    exclude_ids={dataset_id},
+                    max_neighbors=3,
+                )
+                model_paper_nbrs = self._get_simple_neighbors(
+                    G, node_metadata, model_id, "paper", max_neighbors=3,
+                )
+                model_code_nbrs = self._get_simple_neighbors(
+                    G, node_metadata, model_id, "codebase", max_neighbors=3,
+                )
                 model_info_map[model_id] = {
-                    "model_name": model_name,
-                    "model_info": model_info_text,
+                    "model_name": node_metadata.get(model_id, {}).get("name"),
+                    "model_info": node_metadata.get(model_id, {}).get("info"),
                     "true_value": true_value,
                     "model_neighbors": model_neighbors,
+                    "paper_neighbors": model_paper_nbrs,
+                    "code_neighbors": model_code_nbrs,
                 }
 
+            # --- Dataset-side neighbours ---
+            dataset_model_neighbors = self._get_dataset_model_neighbors(
+                G, node_metadata, edge_metadata, dataset_id, metric_name,
+                exclude_ids=model_ids_ranked,
+                max_neighbors=10,
+            )
+            dataset_paper_nbrs = self._get_simple_neighbors(
+                G, node_metadata, dataset_id, "paper", max_neighbors=3,
+            )
+            dataset_code_nbrs = self._get_simple_neighbors(
+                G, node_metadata, dataset_id, "codebase", max_neighbors=3,
+            )
+
             prompt = self._build_attribute_ranking_prompt(
-                dataset_name, dataset_info, models_shuffled, model_info_map, metric_name
+                dataset_name, dataset_info, models_shuffled, model_info_map, metric_name,
+                dataset_model_neighbors=dataset_model_neighbors,
+                dataset_paper_neighbors=dataset_paper_nbrs,
+                dataset_code_neighbors=dataset_code_nbrs,
             )
 
             messages = [{"role": "user", "content": prompt}]
@@ -124,12 +255,26 @@ class LLMAttributeRanker:
                         "total_models_ranked": len(models_to_rank),
                     }
                 )
-
             return ranking_result
 
         except Exception as e:
             print(f"Error ranking models for dataset {dataset_id}: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Prompt construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_metrics(metrics: Dict[str, float], target_metric: str) -> str:
+        """Format a metrics dict as a comma-separated string, target metric first."""
+        parts: List[str] = []
+        if target_metric in metrics:
+            parts.append(f"{target_metric}: {metrics[target_metric]:.3f}")
+        for mk, mv in metrics.items():
+            if mk != target_metric:
+                parts.append(f"{mk}: {mv:.3f}")
+        return ", ".join(parts)
 
     def _build_attribute_ranking_prompt(
         self,
@@ -138,44 +283,83 @@ class LLMAttributeRanker:
         models_to_rank: List[Tuple[int, float]],
         model_info_map: Dict,
         metric_name: str,
+        dataset_model_neighbors: List[NeighborInfo] | None = None,
+        dataset_paper_neighbors: List[Tuple[str, str]] | None = None,
+        dataset_code_neighbors: List[Tuple[str, str]] | None = None,
     ):
         prompt = f"Dataset: {dataset_name}\n"
 
         if self.use_info and dataset_info:
             prompt += f"\nDataset Information:\n{dataset_info}\n"
 
+        # Dataset-side 1-hop: known performance of other models on this dataset
+        if self.hop_number > 0 and dataset_model_neighbors:
+            prompt += f"\nKnown performance of other models on {dataset_name}:\n"
+            for nbr_name, nbr_metrics, _edge_meta, nbr_info in dataset_model_neighbors:
+                metrics_str = self._format_metrics(nbr_metrics, metric_name)
+                if self.use_info and nbr_info:
+                    prompt += f"  - {nbr_name}: {metrics_str} (info: {nbr_info})\n"
+                else:
+                    prompt += f"  - {nbr_name}: {metrics_str}\n"
+
+        if self.hop_number > 0 and dataset_paper_neighbors:
+            prompt += f"\nRelated papers for {dataset_name}:\n"
+            for name, info in dataset_paper_neighbors:
+                if self.use_info and info:
+                    prompt += f"  - {name}: {info}\n"
+                else:
+                    prompt += f"  - {name}\n"
+
+        if self.hop_number > 0 and dataset_code_neighbors:
+            prompt += f"\nRelated code repositories for {dataset_name}:\n"
+            for name, info in dataset_code_neighbors:
+                if self.use_info and info:
+                    prompt += f"  - {name}: {info}\n"
+                else:
+                    prompt += f"  - {name}\n"
+
         prompt += "\nModels to rank:\n"
         for model_id, _ in models_to_rank:
             info = model_info_map[model_id]
-            model_name = info["model_name"]
-            model_info = info["model_info"]
+            m_name = info["model_name"]
+            m_info = info["model_info"]
             model_neighbors = info["model_neighbors"]
+            paper_nbrs = info.get("paper_neighbors", [])
+            code_nbrs = info.get("code_neighbors", [])
 
-            prompt += f"\n- {model_name}"
-            if self.use_info and model_info:
-                prompt += f": {model_info}"
+            prompt += f"\n- {m_name}"
+            if self.use_info and m_info:
+                prompt += f": {m_info}"
 
-            # Add model's performance on other datasets if available
+            # Model-side 1-hop: this model's performance on other datasets
             if self.hop_number > 0 and model_neighbors:
-                prompt += f"\n  {model_name}'s performance on other datasets:"
-                for ds_name, all_metrics, edge_meta, ds_info in model_neighbors:
-                    metrics_strs = []
-                    if metric_name in all_metrics:
-                        metrics_strs.append(f"{metric_name}: {all_metrics[metric_name]:.3f}")
-
-                    for metric_key, metric_value in all_metrics.items():
-                        if metric_key != metric_name:
-                            metrics_strs.append(f"{metric_key}: {metric_value:.3f}")
-
-                    metrics_display = ", ".join(metrics_strs)
+                prompt += f"\n  {m_name}'s performance on other datasets:"
+                for ds_name, ds_metrics, _edge_meta, ds_info in model_neighbors:
+                    metrics_str = self._format_metrics(ds_metrics, metric_name)
                     if self.use_info and ds_info:
-                        prompt += f"\n    * {ds_name}: {metrics_display} (info: {ds_info})"
+                        prompt += f"\n    * {ds_name}: {metrics_str} (info: {ds_info})"
                     else:
-                        prompt += f"\n    * {ds_name}: {metrics_display}"
+                        prompt += f"\n    * {ds_name}: {metrics_str}"
+
+            if self.hop_number > 0 and paper_nbrs:
+                prompt += f"\n  Related papers:"
+                for p_name, p_info in paper_nbrs:
+                    if self.use_info and p_info:
+                        prompt += f"\n    * {p_name}: {p_info}"
+                    else:
+                        prompt += f"\n    * {p_name}"
+
+            if self.hop_number > 0 and code_nbrs:
+                prompt += f"\n  Related code repositories:"
+                for c_name, c_info in code_nbrs:
+                    if self.use_info and c_info:
+                        prompt += f"\n    * {c_name}: {c_info}"
+                    else:
+                        prompt += f"\n    * {c_name}"
 
             prompt += "\n"
 
-        # Move task description to the end
+        # Task description
         prompt += f"\nTask: For the dataset '{dataset_name}', please rank the above models based on their expected '{metric_name}' performance. Order them from best (highest score) to worst (lowest score).\n"
         prompt += f"\nConsider the models' capabilities and the dataset's characteristics to predict their {metric_name} performance.\n"
         prompt += "\nProvide your answer as a JSON object with this structure:"
@@ -192,6 +376,10 @@ class LLMAttributeRanker:
 The 'ranked_models' list should contain all models, ordered from highest to lowest expected score.
 'expected_score' should be your predicted float value for the metric."""
         return prompt
+
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
 
     def _parse_attribute_ranking_answer(
         self,

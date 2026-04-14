@@ -6,9 +6,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from torch_geometric.data import Data
 from torch_geometric.utils import degree
+
+from ..utils.evaluation_utils import calculate_r_squared, evaluate_regression
 
 
 class GNNAttributeEvaluator:
@@ -60,12 +61,7 @@ class GNNAttributeEvaluator:
         y_pred: np.ndarray,
     ) -> Dict[str, float]:
         """Compute standard regression metrics."""
-        return {
-            "mse": float(mean_squared_error(y_true, y_pred)),
-            "mae": float(mean_absolute_error(y_true, y_pred)),
-            "rmse": float(mean_squared_error(y_true, y_pred) ** 0.5),
-            "r2": float(r2_score(y_true, y_pred)),
-        }
+        return evaluate_regression(y_pred.tolist(), y_true.tolist())
 
     def _compute_degree_metrics(
         self,
@@ -89,7 +85,9 @@ class GNNAttributeEvaluator:
             ("Head", edge_min_deg > 20),
         ]:
             if mask.sum() > 0:
-                metrics[f"r2_{name}"] = float(r2_score(y_true[mask], y_pred[mask]))
+                metrics[f"r_squared_{name}"] = calculate_r_squared(
+                    y_pred[mask].tolist(), y_true[mask].tolist()
+                )
 
         return metrics
 
@@ -117,7 +115,7 @@ class GNNAttributeEvaluator:
     ):
         """Print metrics in a formatted way."""
         print(f"\n{prefix}_mse {metrics['mse']:.6f} | "
-              f"{prefix}_r2 {metrics['r2']:.4f}")
+              f"{prefix}_r_squared {metrics['r_squared']:.4f}")
 
         degree_keys = [k for k in metrics if any(b in k for b in ["Tail", "Medium", "Head"])]
         if degree_keys:

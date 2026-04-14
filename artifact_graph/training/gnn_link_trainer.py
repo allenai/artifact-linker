@@ -22,15 +22,16 @@ LINK_MODEL_TYPES = ("gatv2", "gcn", "ncn", "ncnc", "neognn", "buddy")
 @dataclass
 class LinkTrainingConfig:
     """Configuration for GNN training."""
-    epochs: int = 300
-    eval_every: int = 50
-    patience: int = 40
+    epochs: int = 5000
+    eval_every: int = 10
+    patience: int = 50
     lr: float = 5e-3
     weight_decay: float = 1e-4
-    lr_patience: int = 10
+    lr_patience: int = 15
     amp: bool = False
     seed: int = 42
     threshold: float = 0.5  # probability threshold for binary classification (F1, precision, recall)
+    neg_ratio: Optional[int] = None  # negative:positive ratio for training (e.g. 5 means 1:5); None = use all negatives
 
 
 @dataclass
@@ -107,6 +108,18 @@ class GNNLinkTrainer:
         self.best_metrics: Optional[Dict[str, float]] = None
         self.best_state: Optional[Dict[str, torch.Tensor]] = None
 
+    def _subsample_negatives(self, neg_edge_index: torch.Tensor, num_pos: int) -> torch.Tensor:
+        """Subsample negative edges to neg_ratio * num_pos if neg_ratio is set."""
+        neg_ratio = self.config.neg_ratio
+        if neg_ratio is None:
+            return neg_edge_index
+        max_neg = neg_ratio * num_pos
+        num_neg = neg_edge_index.size(1)
+        if num_neg <= max_neg:
+            return neg_edge_index
+        perm = torch.randperm(num_neg, device=neg_edge_index.device)[:max_neg]
+        return neg_edge_index[:, perm]
+
     def train_epoch(
         self,
         data,
@@ -117,10 +130,14 @@ class GNNLinkTrainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
+        # Subsample negatives each epoch for diversity
+        num_pos = split.pos_edge_label_index.size(1)
+        neg_edges = self._subsample_negatives(split.neg_edge_label_index, num_pos)
+
         with torch.amp.autocast('cuda', enabled=self.scaler.is_enabled()):
             z = self.model.encode(data.x, split.edge_index)
             pos = self.model.decode(z, split.pos_edge_label_index)
-            neg = self.model.decode(z, split.neg_edge_label_index)
+            neg = self.model.decode(z, neg_edges)
             loss = bce_logits_loss(pos, neg, pos_weight)
 
         self.scaler.scale(loss).backward()
@@ -146,7 +163,15 @@ class GNNLinkTrainer:
         # Calculate positive weight for imbalanced data
         pos_n = train_split.pos_edge_label_index.size(1)
         neg_n = train_split.neg_edge_label_index.size(1)
-        pos_weight = neg_n / max(1, pos_n)
+        # If neg_ratio is set, use the effective ratio for pos_weight
+        if self.config.neg_ratio is not None:
+            effective_neg = min(neg_n, self.config.neg_ratio * pos_n)
+            pos_weight = effective_neg / max(1, pos_n)
+            if verbose:
+                print(f"Training neg subsample: {neg_n} -> {effective_neg} "
+                      f"(ratio 1:{self.config.neg_ratio}, pos={pos_n})")
+        else:
+            pos_weight = neg_n / max(1, pos_n)
 
         # Pre-calculate node degrees for degree-controlled evaluation
         node_degrees = degree(train_data.edge_index[0], train_data.num_nodes)
@@ -159,6 +184,9 @@ class GNNLinkTrainer:
             history["losses"].append(loss)
 
             if epoch % self.config.eval_every == 0 or epoch == self.config.epochs:
+                self.model.eval()
+                # Always use train_data for validation encoding during training.
+                # Support edges are only used at final test time, not during training.
                 with torch.no_grad():
                     z = self.model.encode(train_data.x, train_data.edge_index)
 
@@ -167,11 +195,11 @@ class GNNLinkTrainer:
                 )
                 history["val_metrics"].append(val_metrics)
 
-                self.scheduler.step(val_metrics["auc"])
+                self.scheduler.step(val_metrics["ap_auc"])
 
                 improved = (
                     self.best_metrics is None
-                    or val_metrics["auc"] > self.best_metrics["auc"]
+                    or val_metrics["ap_auc"] > self.best_metrics["ap_auc"]
                 )
 
                 if improved:
@@ -186,6 +214,8 @@ class GNNLinkTrainer:
                 if verbose:
                     self._print_progress(epoch, loss, val_metrics)
 
+                self.model.train()  # switch back for next training epoch
+
                 if wait >= self.config.patience:
                     if verbose:
                         print(f"Early stopping at epoch {epoch}")
@@ -197,7 +227,7 @@ class GNNLinkTrainer:
                 {k: v.to(self.device) for k, v in self.best_state.items()}
             )
             if verbose:
-                print(f"Restored best checkpoint (val_auc={self.best_metrics['auc']:.4f})")
+                print(f"Restored best checkpoint (val_ap_auc={self.best_metrics['ap_auc']:.4f})")
 
         return {
             "history": history,
@@ -206,19 +236,20 @@ class GNNLinkTrainer:
 
     def _print_progress(self, epoch: int, loss: float, val_metrics: Dict[str, float]):
         """Print training progress."""
-        tail_auc = val_metrics.get("auc_Tail (deg<=5)", "")
-        head_auc = val_metrics.get("auc_Head (deg>20)", "")
+        tail_auc = val_metrics.get("ap_auc_Tail (deg<=5)", "")
+        head_auc = val_metrics.get("ap_auc_Head (deg>20)", "")
 
         bucket_info = ""
         if tail_auc:
-            bucket_info += f" | Tail_AUC {tail_auc:.4f}"
+            bucket_info += f" | Tail_AP {tail_auc:.4f}"
         if head_auc:
-            bucket_info += f" | Head_AUC {head_auc:.4f}"
+            bucket_info += f" | Head_AP {head_auc:.4f}"
 
         print(
             f"epoch {epoch:04d} | loss {loss:.4f} | "
-            f"val_auc {val_metrics['auc']:.4f} | val_f1 {val_metrics['f1']:.4f} | "
-            f"val_prec {val_metrics['precision']:.4f} | val_rec {val_metrics['recall']:.4f}"
+            f"val_ap_auc {val_metrics['ap_auc']:.4f} | "
+            f"val_mcc {val_metrics['mcc']:.4f} | "
+            f"val_recall {val_metrics['recall']:.4f}"
             f"{bucket_info}"
         )
 
@@ -249,8 +280,12 @@ def build_link_model(config: LinkModelConfig, device: torch.device) -> nn.Module
     """Build a link-prediction model from config (factory).
 
     Supports: gatv2, gcn, ncn, ncnc, neognn, buddy.
+    Backbone is derived from model_type: gatv2/gcn use themselves,
+    others default to gatv2.
     """
     mt = config.model_type
+    # Derive backbone from model_type
+    bb = mt if mt in ("gatv2", "gcn") else "gatv2"
 
     if mt in ("gatv2", "gcn"):
         model: nn.Module = GNNLinkPredictor(
@@ -259,7 +294,8 @@ def build_link_model(config: LinkModelConfig, device: torch.device) -> nn.Module
             num_layers=config.num_layers,
             heads=config.heads,
             dropout=config.dropout,
-            backbone=mt,
+            backbone=bb,
+            decoder="bilinear"
         )
     elif mt in ("ncn", "ncnc"):
         from ..models.ncn_link_predictor import NCNLinkPredictor
@@ -267,7 +303,9 @@ def build_link_model(config: LinkModelConfig, device: torch.device) -> nn.Module
             in_channels=config.in_channels,
             hidden_channels=config.hidden_channels,
             num_layers=config.num_layers,
+            heads=config.heads,
             dropout=config.dropout,
+            backbone=bb,
             use_completion=(mt == "ncnc"),
         )
     elif mt == "neognn":
@@ -276,7 +314,9 @@ def build_link_model(config: LinkModelConfig, device: torch.device) -> nn.Module
             in_channels=config.in_channels,
             hidden_channels=config.hidden_channels,
             num_layers=config.num_layers,
+            heads=config.heads,
             dropout=config.dropout,
+            backbone=bb,
         )
     elif mt == "buddy":
         from ..models.buddy_link_predictor import BUDDYLinkPredictor
@@ -284,7 +324,9 @@ def build_link_model(config: LinkModelConfig, device: torch.device) -> nn.Module
             in_channels=config.in_channels,
             hidden_channels=config.hidden_channels,
             num_layers=config.num_layers,
+            heads=config.heads,
             dropout=config.dropout,
+            backbone=bb,
         )
     else:
         raise ValueError(
@@ -308,6 +350,8 @@ def load_link_model(
     # Backward compatibility: old checkpoints may lack model_type
     if "model_type" not in cfg_dict:
         cfg_dict["model_type"] = "gatv2"
+    # Drop legacy backbone field if present (now derived from model_type)
+    cfg_dict.pop("backbone", None)
     model_cfg = LinkModelConfig(**cfg_dict)
     model = build_link_model(model_cfg, device)
     model.load_state_dict(ckpt["model_state_dict"])

@@ -29,14 +29,13 @@ from artifact_graph.runners.attribute_runner import AttributeConfig
 def add_common_args(p):
     """Add common arguments to parser."""
     p.add_argument("--data-dir", default="output/artifact_graph_data")
+    p.add_argument("--split-dir", default="output/artifact_graph_splits")
     p.add_argument("--output-dir", default="output/final_results")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--use-gnn-data", action="store_true")
 
 
 def add_gnn_args(p, is_link=True):
     """Add GNN-specific arguments."""
-    p.add_argument("--split-dir", default="output/artifact_graph_splits")
     if is_link:
         p.add_argument("--epochs", type=int, default=300)
         p.add_argument("--patience", type=int, default=40)
@@ -70,7 +69,7 @@ def add_baseline_args(p, is_link=True):
         p.add_argument("--threshold", type=float, default=None)
     else:
         p.add_argument("--mode", default="dataset_average",
-                       choices=["global_average", "dataset_average"])
+                       choices=["global_average", "dataset_average", "model_average"])
 
 
 def build_link_config(args, method: str) -> LinkConfig:
@@ -78,9 +77,9 @@ def build_link_config(args, method: str) -> LinkConfig:
     kwargs = dict(
         method=method,
         data_dir=args.data_dir,
+        split_dir=args.split_dir,
         output_dir=args.output_dir,
         seed=args.seed,
-        use_gnn_data=getattr(args, "use_gnn_data", False),
     )
     
     if method == "gnn":
@@ -108,10 +107,6 @@ def build_link_config(args, method: str) -> LinkConfig:
             threshold=getattr(args, "threshold", None),
         )
     
-    # Task-specific
-    kwargs["max_pairs"] = getattr(args, "max_pairs", 0)  # 0 = all pairs
-    kwargs["max_datasets"] = getattr(args, "max_datasets", 0)  # 0 = all datasets
-    
     return LinkConfig(**kwargs)
 
 
@@ -120,9 +115,9 @@ def build_attr_config(args, method: str) -> AttributeConfig:
     kwargs = dict(
         method=method,
         data_dir=args.data_dir,
+        split_dir=args.split_dir,
         output_dir=args.output_dir,
         seed=args.seed,
-        use_gnn_data=getattr(args, "use_gnn_data", False),
         metric_name=getattr(args, "metric", None),
     )
     
@@ -147,11 +142,6 @@ def build_attr_config(args, method: str) -> AttributeConfig:
     else:  # baseline
         kwargs.update(baseline_mode=args.mode)
     
-    # Task-specific
-    kwargs["max_pairs"] = getattr(args, "max_pairs", 10)
-    kwargs["max_datasets"] = getattr(args, "max_datasets", 0)
-    kwargs["max_models_per_dataset"] = getattr(args, "max_models_per_dataset", 20)
-    
     return AttributeConfig(**kwargs)
 
 
@@ -174,10 +164,8 @@ def main():
             add_gnn_args(p, is_link=True)
         elif method == "llm":
             add_llm_args(p)
-            p.add_argument("--max-pairs", type=int, default=5000)
         else:
             add_baseline_args(p, is_link=True)
-            p.add_argument("--max-pairs", type=int, default=500000)
     
     # predict attr
     pred_attr = predict_sub.add_parser("attr", help="Attribute prediction")
@@ -191,7 +179,6 @@ def main():
             add_gnn_args(p, is_link=False)
         elif method == "llm":
             add_llm_args(p)
-            p.add_argument("--max-pairs", type=int, default=10)
         else:
             add_baseline_args(p, is_link=False)
     
@@ -206,7 +193,6 @@ def main():
     for method in ["gnn", "llm", "baseline"]:
         p = rank_link_sub.add_parser(method)
         add_common_args(p)
-        p.add_argument("--max-datasets", type=int, default=0, help="0 = all datasets")
         if method == "gnn":
             p.add_argument("--split-dir", default="output/artifact_graph_splits")
             p.add_argument("--model-path", required=True)
@@ -222,9 +208,7 @@ def main():
     for method in ["gnn", "llm", "baseline"]:
         p = rank_attr_sub.add_parser(method)
         add_common_args(p)
-        p.add_argument("--metric", default="accuracy")
-        p.add_argument("--max-datasets", type=int, default=0)
-        p.add_argument("--max-models-per-dataset", type=int, default=20)
+        p.add_argument("--metric", default=None)
         if method == "gnn":
             p.add_argument("--split-dir", default="output/artifact_graph_splits")
             p.add_argument("--model-path", required=True)

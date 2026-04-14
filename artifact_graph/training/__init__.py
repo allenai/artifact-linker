@@ -10,8 +10,14 @@ try:
     from .gnn_attribute_trainer import (
         GNNAttributeTrainer, AttributeTrainingConfig, AttributeModelConfig,
         build_attribute_model, load_attribute_split, load_split_edge_metadata,
+        ATTR_MODEL_TYPES,
     )
     from .gnn_attribute_evaluator import GNNAttributeEvaluator
+    from .gnn_sota_finder_trainer import (
+        SOTAFinderTrainer, SOTAFinderTrainingConfig, SOTAFinderModelConfig,
+        build_sota_finder, load_sota_finder, load_sota_finder_split,
+    )
+    from .gnn_sota_finder_evaluator import SOTAFinderEvaluator
 
     GNN_TRAINING_AVAILABLE = True
     __all__ = [
@@ -29,6 +35,14 @@ try:
         "build_attribute_model",
         "load_attribute_split",
         "load_split_edge_metadata",
+        "ATTR_MODEL_TYPES",
+        "SOTAFinderTrainer",
+        "SOTAFinderEvaluator",
+        "SOTAFinderTrainingConfig",
+        "SOTAFinderModelConfig",
+        "build_sota_finder",
+        "load_sota_finder",
+        "load_sota_finder_split",
     ]
 except ImportError as e:
     print(f"Warning: GNN training not available: {e}")

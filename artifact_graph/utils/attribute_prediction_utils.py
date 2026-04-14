@@ -6,60 +6,20 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import networkx as nx
+import numpy as np
 
 from .evaluation_utils import (
-    calculate_mae,
-    calculate_mape,
-    calculate_mse,
-    calculate_r_squared,
-    calculate_rmse,
+    evaluate_regression,
 )
-from .link_prediction_utils import convert_numpy_types
+from .graph_utils import (
+    convert_numpy_types,
+    load_attribute_graph_from_split,
+    load_split_metric_map,
+    normalize_model_dataset_edge,
+    select_edge_metric_target,
+)
 
 Edge = Tuple[int, int]
-
-
-# =============================================================================
-# Data Preparation
-# =============================================================================
-
-def prepare_attribute_prediction_data(
-    G: nx.Graph,
-    metric_name: str | None = None,
-) -> Tuple[List[Edge], List[float], List[str]]:
-    """
-    Prepare attribute prediction dataset.
-    
-    Returns all model-dataset edges with their metric values.
-    """
-    edges_to_predict: List[Edge] = []
-    true_metrics: List[float] = []
-    metric_names: List[str] = []
-
-    for u, v, data in G.edges(data=True):
-        u_type, v_type = G.nodes[u].get("type"), G.nodes[v].get("type")
-
-        if u_type == "model" and v_type == "dataset":
-            edge = (u, v)
-        elif v_type == "model" and u_type == "dataset":
-            edge = (v, u)
-        else:
-            continue
-
-        if metric_name is not None:
-            if metric_name in data:
-                edges_to_predict.append(edge)
-                true_metrics.append(float(data[metric_name]))
-                metric_names.append(metric_name)
-        else:
-            for key, value in data.items():
-                if isinstance(value, (int, float)):
-                    edges_to_predict.append(edge)
-                    true_metrics.append(float(value))
-                    metric_names.append(key)
-
-    return edges_to_predict, true_metrics, metric_names
 
 
 # =============================================================================
@@ -67,10 +27,9 @@ def prepare_attribute_prediction_data(
 # =============================================================================
 
 def load_attribute_prediction_data(
-    graph_data_dir: str | Path,
+    split_dir: str | Path,
     metric_name: str | None = None,
-    use_gnn_data: bool = False,
-    gnn_data_path: str = "output/final_results/gnn_attribute_predictions.json",
+    metric_file: str = "edge_metadata_normalized.json",
 ) -> Tuple[Any, Dict, Dict, List, List[float], List[str]]:
     """
     Load graph and prepare attribute prediction data.
@@ -78,33 +37,30 @@ def load_attribute_prediction_data(
     Returns:
         Tuple of (G, node_metadata, edge_metadata, edges, true_metrics, metric_names).
     """
-    from .graph_builder import load_nx_graph
+    split_path = Path(split_dir)
+    G, node_metadata, edge_metadata = load_attribute_graph_from_split(split_path)
 
-    G, node_metadata, edge_metadata = load_nx_graph(graph_data_dir=str(graph_data_dir))
-    edges, true_metrics, metric_names = prepare_attribute_prediction_data(G, metric_name)
+    test_pos = Path(split_path) / "test_split" / "pos_edges.npz"
+    test_metrics = load_split_metric_map(split_path, split_name="test_split", metric_file=metric_file)
 
-    if use_gnn_data:
-        metric_names = []
-        real_edges = []
-        with open(gnn_data_path, "r") as f:
-            gnn_data = json.load(f)
-        gnn_edges = gnn_data["records"]
-        true_metrics = [e["ground_truth"] for e in gnn_edges]
+    pos = np.load(test_pos)["edges"]
+    edges: List[Edge] = []
+    true_metrics: List[float] = []
+    metric_names: List[str] = []
+    for i in range(pos.shape[1]):
+        u, v = int(pos[0, i]), int(pos[1, i])
+        edge = normalize_model_dataset_edge(u, v, node_metadata)
+        if edge is None:
+            continue
 
-        for edge, metric_num in zip(gnn_edges, true_metrics):
-            e1 = tuple(edge["input"]["edge"])
-            e2 = tuple(edge["input"]["edge"][::-1])
-            found_edge = e1 if e1 in edge_metadata else e2 if e2 in edge_metadata else None
-            if not found_edge:
-                raise ValueError(f"Edge {e1} not found")
-            real_edges.append(found_edge)
-
-            for mn, mv in edge_metadata[found_edge]["metrics"].items():
-                if abs(mv - metric_num) < 1e-3:
-                    metric_names.append(mn)
-                    break
-
-        edges = real_edges
+        metrics = test_metrics.get((u, v), test_metrics.get((v, u), {}))
+        selected = select_edge_metric_target(metrics, metric_name)
+        if selected is None:
+            continue
+        selected_name, selected_value = selected
+        edges.append(edge)
+        true_metrics.append(selected_value)
+        metric_names.append(selected_name)
 
     return G, node_metadata, edge_metadata, edges, true_metrics, metric_names
 
@@ -160,15 +116,7 @@ def compute_attribute_prediction_metrics(
     ground_truth: List[float],
 ) -> Dict[str, float]:
     """Compute attribute prediction metrics (regression)."""
-    if not predictions:
-        return {}
-    return {
-        "mse": calculate_mse(predictions, ground_truth),
-        "mae": calculate_mae(predictions, ground_truth),
-        "rmse": calculate_rmse(predictions, ground_truth),
-        "mape": calculate_mape(predictions, ground_truth),
-        "r_squared": calculate_r_squared(predictions, ground_truth),
-    }
+    return evaluate_regression(predictions, ground_truth)
 
 
 def print_attribute_prediction_metrics(

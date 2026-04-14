@@ -8,12 +8,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 from sklearn.metrics import (
-    accuracy_score,
     average_precision_score,
-    f1_score,
-    precision_score,
+    matthews_corrcoef,
     recall_score,
-    roc_auc_score,
 )
 
 
@@ -115,14 +112,11 @@ class GNNLinkEvaluator:
         y_pred: np.ndarray,
         y_prob: np.ndarray,
     ) -> Dict[str, float]:
-        """Compute standard classification metrics."""
+        """Compute standard classification metrics: AP-AUC, MCC, Recall."""
         return {
-            "accuracy": float(accuracy_score(y_true, y_pred)),
-            "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+            "ap_auc": float(average_precision_score(y_true, y_prob)),
+            "mcc": float(matthews_corrcoef(y_true, y_pred)),
             "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-            "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-            "auc": float(roc_auc_score(y_true, y_prob)),
-            "average_precision": float(average_precision_score(y_true, y_prob)),
         }
 
     def _compute_degree_metrics(
@@ -148,18 +142,19 @@ class GNNLinkEvaluator:
                 sub_pred = y_pred[mask]
                 sub_prob = y_prob[mask]
 
-                metrics[f"f1_{bucket_name}"] = float(
-                    f1_score(sub_true, sub_pred, zero_division=0)
-                )
-                metrics[f"acc_{bucket_name}"] = float(accuracy_score(sub_true, sub_pred))
-
                 try:
-                    metrics[f"auc_{bucket_name}"] = float(
-                        roc_auc_score(sub_true, sub_prob)
+                    metrics[f"ap_auc_{bucket_name}"] = float(
+                        average_precision_score(sub_true, sub_prob)
                     )
                 except ValueError:
-                    # Only one class present
-                    metrics[f"auc_{bucket_name}"] = 0.0
+                    metrics[f"ap_auc_{bucket_name}"] = 0.0
+
+                metrics[f"mcc_{bucket_name}"] = float(
+                    matthews_corrcoef(sub_true, sub_pred)
+                )
+                metrics[f"recall_{bucket_name}"] = float(
+                    recall_score(sub_true, sub_pred, zero_division=0)
+                )
 
         return metrics
 
@@ -204,11 +199,9 @@ class GNNLinkEvaluator:
         prefix: str = "test",
     ):
         """Print metrics in a formatted way."""
-        print(f"\n{prefix}_auc {metrics['auc']:.4f} | "
-              f"{prefix}_f1 {metrics['f1']:.4f} | "
-              f"{prefix}_prec {metrics['precision']:.4f} | "
-              f"{prefix}_rec {metrics['recall']:.4f} | "
-              f"{prefix}_acc {metrics['accuracy']:.4f}")
+        print(f"\n{prefix}_ap_auc {metrics['ap_auc']:.4f} | "
+              f"{prefix}_mcc {metrics['mcc']:.4f} | "
+              f"{prefix}_recall {metrics['recall']:.4f}")
 
         # Print degree-controlled breakdown
         degree_keys = [k for k in metrics if any(b in k for b in ["Tail", "Medium", "Head"])]

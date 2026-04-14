@@ -34,11 +34,22 @@ class LLMAttributePredictor:
 
             model_neighbors = None
             dataset_neighbors = None
+            model_paper_neighbors = None
+            model_code_neighbors = None
+            dataset_paper_neighbors = None
+            dataset_code_neighbors = None
+            max_model_neighbors = 10   # Cap neighbors to avoid overly long prompts
+            max_dataset_neighbors = 10
             if self.hop_number > 0:
                 model_neighbors = []
+                model_paper_neighbors = []
+                model_code_neighbors = []
                 for neighbor_id in G.neighbors(model_id):
-                    edge_key = tuple(sorted((model_id, neighbor_id)))
-                    if neighbor_id != dataset_id and G.nodes[neighbor_id].get("type") == "dataset":
+                    if neighbor_id == dataset_id:
+                        continue
+                    ntype = G.nodes[neighbor_id].get("type")
+                    if ntype == "dataset" and len(model_neighbors) < max_model_neighbors:
+                        edge_key = tuple(sorted((model_id, neighbor_id)))
                         neighbor_name = node_metadata.get(neighbor_id, {}).get("name")
                         edge_attrs = G.edges[model_id, neighbor_id]
                         edge_meta = edge_metadata.get(edge_key, {})
@@ -56,11 +67,26 @@ class LLMAttributePredictor:
                             model_neighbors.append(
                                 (neighbor_name, all_metrics, edge_meta, neighbor_info)
                             )
+                    elif ntype == "paper" and len(model_paper_neighbors) < 3:
+                        model_paper_neighbors.append((
+                            node_metadata.get(neighbor_id, {}).get("name", str(neighbor_id)),
+                            node_metadata.get(neighbor_id, {}).get("info", ""),
+                        ))
+                    elif ntype == "codebase" and len(model_code_neighbors) < 3:
+                        model_code_neighbors.append((
+                            node_metadata.get(neighbor_id, {}).get("name", str(neighbor_id)),
+                            node_metadata.get(neighbor_id, {}).get("info", ""),
+                        ))
 
                 dataset_neighbors = []
+                dataset_paper_neighbors = []
+                dataset_code_neighbors = []
                 for neighbor_id in G.neighbors(dataset_id):
-                    edge_key = tuple(sorted((neighbor_id, dataset_id)))
-                    if neighbor_id != model_id and G.nodes[neighbor_id].get("type") == "model":
+                    if neighbor_id == model_id:
+                        continue
+                    ntype = G.nodes[neighbor_id].get("type")
+                    if ntype == "model" and len(dataset_neighbors) < max_dataset_neighbors:
+                        edge_key = tuple(sorted((neighbor_id, dataset_id)))
                         neighbor_name = node_metadata.get(neighbor_id, {}).get("name")
                         edge_attrs = G.edges[neighbor_id, dataset_id]
                         edge_meta = edge_metadata.get(edge_key, {})
@@ -78,6 +104,16 @@ class LLMAttributePredictor:
                             dataset_neighbors.append(
                                 (neighbor_name, all_metrics, edge_meta, neighbor_info)
                             )
+                    elif ntype == "paper" and len(dataset_paper_neighbors) < 3:
+                        dataset_paper_neighbors.append((
+                            node_metadata.get(neighbor_id, {}).get("name", str(neighbor_id)),
+                            node_metadata.get(neighbor_id, {}).get("info", ""),
+                        ))
+                    elif ntype == "codebase" and len(dataset_code_neighbors) < 3:
+                        dataset_code_neighbors.append((
+                            node_metadata.get(neighbor_id, {}).get("name", str(neighbor_id)),
+                            node_metadata.get(neighbor_id, {}).get("info", ""),
+                        ))
 
             prompt = self._build_prompt(
                 model_name=model_name,
@@ -87,6 +123,10 @@ class LLMAttributePredictor:
                 model_neighbors=model_neighbors,
                 dataset_neighbors=dataset_neighbors,
                 metric_name=metric_name,
+                model_paper_neighbors=model_paper_neighbors,
+                model_code_neighbors=model_code_neighbors,
+                dataset_paper_neighbors=dataset_paper_neighbors,
+                dataset_code_neighbors=dataset_code_neighbors,
             )
 
             messages = [{"role": "user", "content": prompt}]
@@ -114,6 +154,10 @@ class LLMAttributePredictor:
         model_neighbors=None,
         dataset_neighbors=None,
         metric_name=None,
+        model_paper_neighbors=None,
+        model_code_neighbors=None,
+        dataset_paper_neighbors=None,
+        dataset_code_neighbors=None,
     ):
         metric_str = metric_name if metric_name else "performance"
         prediction_instruction = f"Please predict the {metric_str} that {model_name} would achieve on {dataset_name}. Provide your answer as a JSON object with two keys: 'prediction' (a float between 0 and 1) and 'reason' (a brief explanation of your reasoning)."
@@ -146,7 +190,23 @@ class LLMAttributePredictor:
             else:
                 prompt += "- (no other datasets)\n"
 
-            prompt += f"{dataset_name}'s performance with other models:\n"
+            if model_paper_neighbors:
+                prompt += f"\nRelated papers for {model_name}:\n"
+                for name, info in model_paper_neighbors:
+                    if self.use_info and info:
+                        prompt += f"- {name}: {info}\n"
+                    else:
+                        prompt += f"- {name}\n"
+
+            if model_code_neighbors:
+                prompt += f"\nRelated code repositories for {model_name}:\n"
+                for name, info in model_code_neighbors:
+                    if self.use_info and info:
+                        prompt += f"- {name}: {info}\n"
+                    else:
+                        prompt += f"- {name}\n"
+
+            prompt += f"\n{dataset_name}'s performance with other models:\n"
             if dataset_neighbors:
                 for mdl, all_metrics, meta, mdl_info in dataset_neighbors:
                     metrics_strs = []
@@ -165,8 +225,23 @@ class LLMAttributePredictor:
             else:
                 prompt += "- (no other models)\n"
 
+            if dataset_paper_neighbors:
+                prompt += f"\nRelated papers for {dataset_name}:\n"
+                for name, info in dataset_paper_neighbors:
+                    if self.use_info and info:
+                        prompt += f"- {name}: {info}\n"
+                    else:
+                        prompt += f"- {name}\n"
+
+            if dataset_code_neighbors:
+                prompt += f"\nRelated code repositories for {dataset_name}:\n"
+                for name, info in dataset_code_neighbors:
+                    if self.use_info and info:
+                        prompt += f"- {name}: {info}\n"
+                    else:
+                        prompt += f"- {name}\n"
+
         prompt += f"\n{prediction_instruction}"
-        breakpoint()
         return prompt
 
     def _parse_llm_answer(self, answer, model_name, dataset_name):

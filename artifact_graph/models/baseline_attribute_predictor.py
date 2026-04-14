@@ -9,8 +9,8 @@ import numpy as np
 
 class BaselineAttributePredictor:
     def __init__(self, mode: str = "dataset_average"):
-        if mode not in {"global_average", "dataset_average"}:
-            raise ValueError("mode must be 'global_average' or 'dataset_average'")
+        if mode not in {"global_average", "dataset_average", "model_average"}:
+            raise ValueError("mode must be 'global_average', 'dataset_average', or 'model_average'")
         self.mode = mode
         self._global_average_cache: Dict[str, float] = {}
 
@@ -65,6 +65,30 @@ class BaselineAttributePredictor:
         avg = float(np.mean(scores)) if scores else 0.5
         return avg, len(scores)
 
+    def _calculate_model_average(
+        self, G: nx.Graph, model_id: int, exclude_dataset_id: int, metric_name: str, edge_metadata: dict
+    ) -> tuple[float, int]:
+        """Average metric across all datasets that this model has been evaluated on."""
+        scores = []
+        for dataset_id in G.neighbors(model_id):
+            # Skip the target dataset
+            if dataset_id == exclude_dataset_id:
+                continue
+
+            # Only consider dataset nodes
+            if G.nodes[dataset_id].get("type") == "dataset":
+                edge_key = (model_id, dataset_id)
+                if edge_key not in edge_metadata:
+                    edge_key = (dataset_id, model_id)
+
+                if edge_key in edge_metadata:
+                    edge_data = edge_metadata[edge_key]
+                    if "metrics" in edge_data and metric_name in edge_data["metrics"]:
+                        scores.append(float(edge_data["metrics"][metric_name]))
+
+        avg = float(np.mean(scores)) if scores else 0.5
+        return avg, len(scores)
+
     def predict(
         self,
         model_id: int,
@@ -80,6 +104,10 @@ class BaselineAttributePredictor:
                 reason = (
                     f"Global average of '{metric_name}' from {n if n >= 0 else 'cached'} edges."
                 )
+            elif self.mode == "model_average":
+                value, n = self._calculate_model_average(G, model_id, dataset_id, metric_name, edge_metadata)
+                model_name = node_metadata.get(model_id, {}).get("name", f"ID_{model_id}")
+                reason = f"Average of '{metric_name}' from {n} other datasets on '{model_name}'."
             else:
                 value, n = self._calculate_dataset_average(G, dataset_id, model_id, metric_name, edge_metadata)
                 dataset_name = node_metadata.get(dataset_id, {}).get("name", f"ID_{dataset_id}")

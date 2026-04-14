@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
@@ -32,39 +33,51 @@ class DatasetCollector:
             return val.isoformat()
         return str(val) if val is not None else ""
 
-    def collect_metadata(self, dataset_id: str) -> Dict[str, Any]:
+    def collect_metadata(self, dataset_id: str, max_retries: int = 3) -> Dict[str, Any]:
         """Fetch metadata dict for a single dataset without saving."""
-        try:
-            ds_info = self.api.dataset_info(dataset_id)
-            return {
-                "datasetId": ds_info.id,
-                "sha": getattr(ds_info, "sha", None),
-                "createdAt": self._format_date(getattr(ds_info, "created_at", None)),
-                "lastModified": self._format_date(getattr(ds_info, "last_modified", None)),
-                "tags": getattr(ds_info, "tags", []),
-                "downloads": getattr(ds_info, "downloads", 0),
-                "likes": getattr(ds_info, "likes", 0),
-                "private": getattr(ds_info, "private", False),
-                "author": getattr(ds_info, "author", ""),
-            }
-        except Exception as e:
-            raise ValueError(f"Failed to fetch dataset '{dataset_id}': {str(e)}")
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                ds_info = self.api.dataset_info(dataset_id)
+                return {
+                    "datasetId": ds_info.id,
+                    "sha": getattr(ds_info, "sha", None),
+                    "createdAt": self._format_date(getattr(ds_info, "created_at", None)),
+                    "lastModified": self._format_date(getattr(ds_info, "last_modified", None)),
+                    "tags": getattr(ds_info, "tags", []),
+                    "downloads": getattr(ds_info, "downloads", 0),
+                    "likes": getattr(ds_info, "likes", 0),
+                    "private": getattr(ds_info, "private", False),
+                    "author": getattr(ds_info, "author", ""),
+                }
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                # Don't retry on 404 (not found) or 401/403 (auth)
+                if "404" in err_str or "not found" in err_str or "401" in err_str or "403" in err_str:
+                    break
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+        raise ValueError(f"Failed to fetch dataset '{dataset_id}': {str(last_error)}")
 
-    def collect_readme(self, dataset_id: str) -> Optional[bytes]:
+    def collect_readme(self, dataset_id: str, max_retries: int = 3) -> Optional[bytes]:
         """Download README.md for a dataset and return its bytes, without saving."""
-        try:
-            # Suppress the verbose download progress bar
-            with open(os.devnull, "w") as devnull:
-                with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-                    file_path = hf_hub_download(
-                        repo_id=dataset_id,
-                        filename="README.md",
-                        repo_type="dataset",
-                        token=self.token,
-                    )
-            return Path(file_path).read_bytes()
-        except Exception:
-            return None
+        for attempt in range(max_retries):
+            try:
+                # Suppress the verbose download progress bar
+                with open(os.devnull, "w") as devnull:
+                    with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                        file_path = hf_hub_download(
+                            repo_id=dataset_id,
+                            filename="README.md",
+                            repo_type="dataset",
+                            token=self.token,
+                        )
+                return Path(file_path).read_bytes()
+            except Exception:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        return None
 
     def save_metadata(
         self,

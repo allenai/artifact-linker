@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import networkx as nx
+import numpy as np
 
 from .evaluation_utils import (
     calculate_map_continuous,
@@ -16,48 +16,52 @@ from .evaluation_utils import (
     calculate_ranking_correlation,
     calculate_regret_at_k,
 )
-from .link_prediction_utils import convert_numpy_types
+from .graph_utils import (
+    convert_numpy_types,
+    load_attribute_graph_from_split,
+    load_split_metric_map,
+    normalize_model_dataset_edge,
+)
 
 
 # =============================================================================
-# Data Preparation
+# Data Loading
 # =============================================================================
 
-def prepare_attribute_ranker_dataset(
-    G: nx.Graph,
+def load_attribute_ranking_data(
+    split_dir: str | Path,
     metric_name: str | None = None,
-) -> Tuple[Dict[int, List[Tuple[int, float]]], Dict[int, str]]:
+    metric_file: str = "edge_metadata_normalized.json",
+) -> Tuple[Any, Dict, Dict, Dict, Dict]:
     """
-    Prepare attribute ranking dataset.
-    
-    For each dataset, find all connected models and their metric values.
-
-    Args:
-        G: NetworkX graph with edge attributes.
-        metric_name: Metric to use (None = auto-select most frequent per dataset).
+    Load graph and prepare attribute ranking data.
 
     Returns:
-        Tuple of (ranking_data, dataset_metrics) where:
-        - ranking_data: {dataset_id: [(model_id, metric_value), ...]}
-        - dataset_metrics: {dataset_id: metric_name}
+        Tuple of (G, node_metadata, edge_metadata, ranking_data, dataset_metrics).
     """
-    dataset_edges = defaultdict(list)
+    split_path = Path(split_dir)
+    G, node_metadata, edge_metadata = load_attribute_graph_from_split(split_path)
 
-    for u, v, data in G.edges(data=True):
-        u_type, v_type = G.nodes[u].get("type"), G.nodes[v].get("type")
-        if u_type == "model" and v_type == "dataset":
-            dataset_edges[v].append((u, data))
-        elif v_type == "model" and u_type == "dataset":
-            dataset_edges[u].append((v, data))
+    test_pos = np.load(split_path / "test_split" / "pos_edges.npz")["edges"]
+    test_metrics_map = load_split_metric_map(split_path, split_name="test_split", metric_file=metric_file)
 
-    ranking_data = {}
-    dataset_metrics = {}
+    dataset_edges: Dict[int, List[Tuple[int, Dict[str, float]]]] = defaultdict(list)
+    for i in range(test_pos.shape[1]):
+        u, v = int(test_pos[0, i]), int(test_pos[1, i])
+        normalized = normalize_model_dataset_edge(u, v, node_metadata)
+        if normalized is None:
+            continue
+        model_id, dataset_id = normalized
+        metrics = test_metrics_map.get((u, v), test_metrics_map.get((v, u), {}))
+        dataset_edges[dataset_id].append((model_id, metrics))
 
+    ranking_data: Dict[int, List[Tuple[int, float]]] = {}
+    dataset_metrics: Dict[int, str] = {}
     for dataset_id, edges in dataset_edges.items():
         if metric_name is None:
             metric_counter = Counter()
-            for _, edge_data in edges:
-                for key, value in edge_data.items():
+            for _, edge_metrics in edges:
+                for key, value in edge_metrics.items():
                     if isinstance(value, (int, float)) and not key.startswith("_"):
                         metric_counter[key] += 1
             if not metric_counter:
@@ -67,50 +71,14 @@ def prepare_attribute_ranker_dataset(
             selected_metric = metric_name
 
         dataset_data = [
-            (model_id, float(edge_data[selected_metric]))
-            for model_id, edge_data in edges
-            if selected_metric in edge_data
+            (model_id, float(edge_metrics[selected_metric]))
+            for model_id, edge_metrics in edges
+            if selected_metric in edge_metrics and isinstance(edge_metrics[selected_metric], (int, float))
         ]
-
         if dataset_data:
             dataset_data.sort(key=lambda x: x[1], reverse=True)
             ranking_data[dataset_id] = dataset_data
             dataset_metrics[dataset_id] = selected_metric
-
-    return ranking_data, dataset_metrics
-
-
-# =============================================================================
-# Data Loading
-# =============================================================================
-
-def load_attribute_ranking_data(
-    graph_data_dir: str | Path,
-    metric_name: str | None = None,
-    use_gnn_data: bool = False,
-    gnn_data_path: str = "output/final_results/gnn_attribute_rankings.json",
-) -> Tuple[Any, Dict, Dict, Dict, Dict]:
-    """
-    Load graph and prepare attribute ranking data.
-
-    Returns:
-        Tuple of (G, node_metadata, edge_metadata, ranking_data, dataset_metrics).
-    """
-    from .graph_builder import load_nx_graph
-
-    G, node_metadata, edge_metadata = load_nx_graph(graph_data_dir=str(graph_data_dir))
-
-    if use_gnn_data:
-        with open(gnn_data_path, "r") as f:
-            gnn_data = json.load(f)
-        ranking_data = {}
-        dataset_metrics = {}
-        for result in gnn_data["results"]:
-            dataset_id = result["dataset_id"]
-            ranking_data[dataset_id] = [(m["model_id"], m["predicted_score"]) for m in result["predicted_ranking"]]
-            dataset_metrics[dataset_id] = result["metric_used"]
-    else:
-        ranking_data, dataset_metrics = prepare_attribute_ranker_dataset(G, metric_name)
 
     return G, node_metadata, edge_metadata, ranking_data, dataset_metrics
 

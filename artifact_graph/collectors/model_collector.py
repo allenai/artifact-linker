@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -33,50 +34,62 @@ class ModelCollector:
         except Exception:
             return None
 
-    def collect_metadata(self, model_id: str) -> Dict[str, Any]:
+    def collect_metadata(self, model_id: str, max_retries: int = 3) -> Dict[str, Any]:
         """
         Fetches and returns metadata for a single model.
         """
-        try:
-            detailed = self.api.model_info(model_id)
-            meta = {
-                "modelId": detailed.id,
-                "sha": getattr(detailed, "sha", None),
-                "lastModified": str(detailed.lastModified)
-                if hasattr(detailed, "lastModified") and detailed.lastModified
-                else None,
-                "pipeline_tag": getattr(detailed, "pipeline_tag", None),
-                "tags": getattr(detailed, "tags", []),
-                "likes": getattr(detailed, "likes", None),
-                "downloads": getattr(detailed, "downloads", None),
-                "private": getattr(detailed, "private", False),
-                "author": getattr(detailed, "author", None),
-            }
-            trained_ds = self._safe_card_field(detailed, "datasets")
-            base = self._safe_card_field(detailed, "base_model")
-            meta["trainedDataset"] = (
-                trained_ds if isinstance(trained_ds, list) else ([trained_ds] if trained_ds else [])
-            )
-            meta["baseModel"] = base
-            return meta
-        except Exception as e:
-            return {"error": f"Failed to fetch model '{model_id}': {str(e)}"}
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                detailed = self.api.model_info(model_id)
+                meta = {
+                    "modelId": detailed.id,
+                    "sha": getattr(detailed, "sha", None),
+                    "lastModified": str(detailed.lastModified)
+                    if hasattr(detailed, "lastModified") and detailed.lastModified
+                    else None,
+                    "pipeline_tag": getattr(detailed, "pipeline_tag", None),
+                    "tags": getattr(detailed, "tags", []),
+                    "likes": getattr(detailed, "likes", None),
+                    "downloads": getattr(detailed, "downloads", None),
+                    "private": getattr(detailed, "private", False),
+                    "author": getattr(detailed, "author", None),
+                }
+                trained_ds = self._safe_card_field(detailed, "datasets")
+                base = self._safe_card_field(detailed, "base_model")
+                meta["trainedDataset"] = (
+                    trained_ds if isinstance(trained_ds, list) else ([trained_ds] if trained_ds else [])
+                )
+                meta["baseModel"] = base
+                return meta
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                # Don't retry on 404/401/403
+                if "404" in err_str or "not found" in err_str or "401" in err_str or "403" in err_str:
+                    break
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+        return {"error": f"Failed to fetch model '{model_id}': {str(last_error)}"}
 
-    def collect_readme(self, model_id: str) -> Optional[bytes]:
+    def collect_readme(self, model_id: str, max_retries: int = 3) -> Optional[bytes]:
         """Download README.md for a model, returning its bytes without saving."""
-        try:
-            # Suppress the verbose download progress bar
-            with open(os.devnull, "w") as devnull:
-                with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-                    file_path = hf_hub_download(
-                        repo_id=model_id,
-                        filename="README.md",
-                        repo_type="model",
-                        token=self.token,
-                    )
-            return Path(file_path).read_bytes()
-        except Exception:
-            return None
+        for attempt in range(max_retries):
+            try:
+                # Suppress the verbose download progress bar
+                with open(os.devnull, "w") as devnull:
+                    with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                        file_path = hf_hub_download(
+                            repo_id=model_id,
+                            filename="README.md",
+                            repo_type="model",
+                            token=self.token,
+                        )
+                return Path(file_path).read_bytes()
+            except Exception:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        return None
 
     def save_metadata(
         self,

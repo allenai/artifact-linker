@@ -10,7 +10,7 @@ class BaselineLinkPredictor:
     VALID_MODES = [
         "downloads", "random", "connectivity", "common_neighbors",
         "jaccard", "adamic_adar", "preferential_attachment",
-        "resource_allocation", "katz",
+        "resource_allocation", "katz", "matrix_factorization",
     ]
 
     def __init__(self, mode: str = "downloads", **kwargs):
@@ -56,6 +56,10 @@ class BaselineLinkPredictor:
         elif mode == "katz":
             self.threshold = kwargs.get("threshold", 0.01)
             self.beta = kwargs.get("beta", 0.1)
+        elif mode == "matrix_factorization":
+            self.threshold = kwargs.get("threshold", 0.5)
+            self.mf_rank = kwargs.get("mf_rank", 64)
+            self._mf_scores = None
 
     def _get_common_neighbors_score(self, model_id: int, dataset_id: int, G: nx.Graph) -> float:
         """Count common neighbors between model and dataset."""
@@ -101,47 +105,76 @@ class BaselineLinkPredictor:
                 score += 1 / degree
         return score
 
+    def _precompute_katz(self, G: nx.Graph):
+        """Precompute Katz score matrix using sparse matrix powers (one-time cost)."""
+        import scipy.sparse as sp
+
+        nodes = sorted(G.nodes())
+        self._katz_node_to_idx = {n: i for i, n in enumerate(nodes)}
+        n = len(nodes)
+
+        A = nx.to_scipy_sparse_array(G, nodelist=nodes, format="csr", dtype=np.float64)
+        A.setdiag(0)
+        A.eliminate_zeros()
+
+        # Katz score = sum_{l=2}^{4} beta^l * A^l  (skip l=1 since direct edges are not paths)
+        A2 = A.dot(A)
+        A3 = A2.dot(A)
+        A4 = A3.dot(A)
+
+        self._katz_matrix = (
+            (self.beta ** 2) * A2
+            + (self.beta ** 3) * A3
+            + (self.beta ** 4) * A4
+        )
+        self._katz_matrix.setdiag(0)
+        self._katz_matrix.eliminate_zeros()
+        print(f"Precomputed Katz matrix: {n} nodes, beta={self.beta}, nnz={self._katz_matrix.nnz}")
+
     def _get_katz_score(self, model_id: int, dataset_id: int, G: nx.Graph) -> float:
-        """Calculate simplified Katz centrality score for link prediction."""
-        try:
-            # For link prediction, we should NOT consider direct paths (since we're predicting missing links)
-            # Instead, we calculate Katz-like score based on paths through intermediary nodes
-            
-            # Create a temporary graph without the potential edge
-            G_temp = G.copy()
-            if G_temp.has_edge(model_id, dataset_id):
-                G_temp.remove_edge(model_id, dataset_id)
-            
-            score = 0.0
-            # Calculate score based on paths of length 2, 3, 4 (limited for efficiency)
-            for path_length in range(2, 5):  # paths of length 2, 3, 4
-                try:
-                    # Count all paths of this length
-                    if path_length == 2:
-                        # Paths of length 2: model -> intermediate -> dataset
-                        model_neighbors = set(G_temp.neighbors(model_id))
-                        dataset_neighbors = set(G_temp.neighbors(dataset_id))
-                        common_neighbors = model_neighbors.intersection(dataset_neighbors)
-                        paths_count = len(common_neighbors)
-                    else:
-                        # For longer paths, use a simplified approximation
-                        # This is computationally expensive, so we use a heuristic
-                        paths_count = 0
-                        if nx.has_path(G_temp, model_id, dataset_id):
-                            try:
-                                shortest_path = nx.shortest_path_length(G_temp, model_id, dataset_id)
-                                if shortest_path == path_length:
-                                    paths_count = 1  # Simplified: assume 1 path of this length
-                            except:
-                                paths_count = 0
-                    
-                    score += (self.beta ** path_length) * paths_count
-                except:
-                    continue
-            
-            return float(score)
-        except:
+        """Look up precomputed Katz score for a node pair."""
+        if not hasattr(self, "_katz_matrix") or self._katz_matrix is None:
+            self._precompute_katz(G)
+
+        i = self._katz_node_to_idx.get(model_id)
+        j = self._katz_node_to_idx.get(dataset_id)
+        if i is None or j is None:
             return 0.0
+        return float(self._katz_matrix[i, j])
+
+    def _precompute_mf(self, G: nx.Graph, node_metadata: dict):
+        """Precompute Matrix Factorization scores via truncated SVD on the adjacency matrix."""
+        from scipy.sparse.linalg import svds
+        import scipy.sparse as sp
+
+        nodes = sorted(G.nodes())
+        node_to_idx = {n: i for i, n in enumerate(nodes)}
+        n = len(nodes)
+
+        A = nx.to_scipy_sparse_array(G, nodelist=nodes, format="csr", dtype=np.float64)
+        A.setdiag(0)
+        A.eliminate_zeros()
+
+        k = min(self.mf_rank, min(A.shape) - 1)
+        U, S, Vt = svds(A.astype(np.float64), k=k)
+
+        # Reconstruct: score(i, j) = (U * S) @ Vt  -> row i dot col j
+        U_S = U * S[np.newaxis, :]  # (n, k)
+        self._mf_U_S = U_S
+        self._mf_Vt = Vt  # (k, n)
+        self._mf_node_to_idx = node_to_idx
+        print(f"Precomputed MF: {n} nodes, rank={k}")
+
+    def _get_mf_score(self, model_id: int, dataset_id: int, G: nx.Graph, node_metadata: dict) -> float:
+        """Look up precomputed MF score for a node pair."""
+        if self._mf_scores is None and not hasattr(self, "_mf_U_S"):
+            self._precompute_mf(G, node_metadata)
+
+        i = self._mf_node_to_idx.get(model_id)
+        j = self._mf_node_to_idx.get(dataset_id)
+        if i is None or j is None:
+            return 0.0
+        return float(self._mf_U_S[i] @ self._mf_Vt[:, j])
 
     def predict(
         self,
@@ -161,6 +194,7 @@ class BaselineLinkPredictor:
                 "preferential_attachment": self._predict_preferential_attachment,
                 "resource_allocation": self._predict_resource_allocation,
                 "katz": self._predict_katz,
+                "matrix_factorization": self._predict_matrix_factorization,
             }.get(self.mode)
 
             if predict_fn is None:
@@ -257,4 +291,10 @@ class BaselineLinkPredictor:
         score = self._get_katz_score(model_id, dataset_id, G)
         prediction = score >= self.threshold
         reason = f"Katz score: {score:.4f} ({'✓' if prediction else '✗'} >= {self.threshold})"
+        return {"prediction": prediction, "reason": reason, "score": score}
+
+    def _predict_matrix_factorization(self, model_id: int, dataset_id: int, G: nx.Graph, node_metadata: dict) -> Dict[str, Any]:
+        score = self._get_mf_score(model_id, dataset_id, G, node_metadata)
+        prediction = score >= self.threshold
+        reason = f"MF score: {score:.4f} ({'✓' if prediction else '✗'} >= {self.threshold})"
         return {"prediction": prediction, "reason": reason, "score": score}

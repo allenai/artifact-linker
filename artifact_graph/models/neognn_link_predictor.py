@@ -14,10 +14,8 @@ Interface:
     encode(x, edge_index, num_nodes=None) → z   (also caches adjacency)
     decode(z, edge_index) → logits               (uses cached adjacency)
 
-Performance:
-    Adjacency is stored as a scipy CSR sparse matrix with caching across epochs.
-    All six structural features (CN count, AA, RA, deg_src, deg_dst, PA) are
-    computed via vectorised sparse-matrix operations — no Python per-edge loops.
+Now uses the shared GNNEncoder backbone so that all models have aligned
+parameter counts and the comparison is fair.
 """
 from __future__ import annotations
 
@@ -25,8 +23,8 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GraphNorm
+
+from .gnn_encoder import GNNEncoder
 
 _NUM_STRUCT_FEATURES = 6  # cn_count, aa, ra, deg_src, deg_dst, pa
 
@@ -38,49 +36,54 @@ class NeoGNNLinkPredictor(nn.Module):
     Args:
         in_channels:      Input feature dimension.
         hidden_channels:  Hidden layer dimension.
-        num_layers:       Number of GCN encoder layers.
+        num_layers:       Number of encoder layers.
+        heads:            Number of attention heads (GATv2 only).
         dropout:          Dropout rate.
+        backbone:         ``"gatv2"`` or ``"gcn"`` — shared encoder type.
     """
 
     def __init__(
         self,
         in_channels: int,
         hidden_channels: int = 64,
-        num_layers: int = 2,
+        num_layers: int = 3,
+        heads: int = 4,
         dropout: float = 0.2,
+        backbone: str = "gatv2",
     ):
         super().__init__()
-        self.hidden_channels = hidden_channels
         self.dropout = dropout
 
-        # ---- GCN encoder ----
-        self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
-        self.convs.append(GCNConv(in_channels, hidden_channels, normalize=True))
-        self.norms.append(GraphNorm(hidden_channels))
-        for _ in range(num_layers - 1):
-            self.convs.append(GCNConv(hidden_channels, hidden_channels, normalize=True))
-            self.norms.append(GraphNorm(hidden_channels))
+        # ---- Shared GNN encoder ----
+        self.encoder = GNNEncoder(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            heads=heads,
+            dropout=dropout,
+            backbone=backbone,
+        )
+        h = self.encoder.out_channels
 
         # ---- Structural feature encoder ----
         self.struct_mlp = nn.Sequential(
-            nn.Linear(_NUM_STRUCT_FEATURES, hidden_channels),
+            nn.Linear(_NUM_STRUCT_FEATURES, h),
             nn.ReLU(),
-            nn.Linear(hidden_channels, hidden_channels),
+            nn.Linear(h, h),
         )
 
         # ---- Node feature combiner ----
         self.node_mlp = nn.Sequential(
-            nn.Linear(hidden_channels * 2, hidden_channels),
+            nn.Linear(h * 2, h),
             nn.ReLU(),
         )
 
         # ---- Final predictor ----
         self.predictor = nn.Sequential(
-            nn.Linear(hidden_channels * 2, hidden_channels),  # node_feat + struct_feat
+            nn.Linear(h * 2, h),  # node_feat + struct_feat
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_channels, 1),
+            nn.Linear(h, 1),
         )
 
         # Cached sparse adjacency
@@ -118,18 +121,17 @@ class NeoGNNLinkPredictor(nn.Module):
         A = self._adj
         deg = self._degrees
 
-        # CN indicator matrix: (batch, num_nodes)
         cn_matrix = A[src].multiply(A[dst])
 
         # 1. Common-neighbor count
         cn_count = np.asarray(cn_matrix.sum(axis=1)).flatten()
 
-        # 2. Adamic-Adar: Σ_{w ∈ CN} 1/log(deg(w)+1)  (only w with deg > 1)
+        # 2. Adamic-Adar
         log_deg = np.log(deg + 1.0)
         aa_w = np.where(deg > 1, 1.0 / log_deg, 0.0)
         aa = np.asarray(cn_matrix.dot(aa_w.reshape(-1, 1))).flatten()
 
-        # 3. Resource Allocation: Σ_{w ∈ CN} 1/(deg(w)+1)
+        # 3. Resource Allocation
         ra_w = 1.0 / (deg + 1.0)
         ra = np.asarray(cn_matrix.dot(ra_w.reshape(-1, 1))).flatten()
 
@@ -148,14 +150,9 @@ class NeoGNNLinkPredictor(nn.Module):
     # --------------------------------------------------------------------- #
     def encode(self, x: torch.Tensor, edge_index: torch.Tensor, num_nodes: int | None = None) -> torch.Tensor:
         n = num_nodes or x.size(0)
-        h = x
-        for conv, norm in zip(self.convs, self.norms):
-            h = conv(h, edge_index)
-            h = norm(h)
-            h = F.relu(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+        z = self.encoder(x, edge_index, num_nodes=num_nodes)
         self._maybe_rebuild_adj(edge_index, n)
-        return h
+        return z
 
     def decode(self, z: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         src, dst = z[edge_index[0]], z[edge_index[1]]

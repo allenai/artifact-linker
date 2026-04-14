@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+import random
+from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
 
 from artifact_graph.utils.llm_client import call_llm
 from artifact_graph.utils.llm_response_parser import parse_llm_response_to_json
+
+# Neighbor tuple: (name, info)
+LinkNeighborInfo = Tuple[str, Optional[str]]
 
 
 class LLMLinkRanker:
@@ -18,6 +22,7 @@ class LLMLinkRanker:
         use_info: bool = True,
         use_rag: bool = False,
         rag_top_k: int = 100,
+        data_dir: Optional[str] = None,
         retriever=None,
     ):
         """
@@ -29,6 +34,7 @@ class LLMLinkRanker:
             use_info: Whether to include node info in prompts
             use_rag: Whether to use RAG for candidate filtering
             rag_top_k: Number of candidates to retrieve before LLM ranking
+            data_dir: Data directory for loading embeddings (for RAG)
             retriever: CandidateRetriever instance (optional, created on demand)
         """
         self.model_name = model_name
@@ -36,7 +42,59 @@ class LLMLinkRanker:
         self.use_info = use_info
         self.use_rag = use_rag
         self.rag_top_k = rag_top_k
+        self.data_dir = data_dir
         self.retriever = retriever
+
+    # ------------------------------------------------------------------
+    # Neighbor collection helpers (symmetric for model / dataset sides)
+    # ------------------------------------------------------------------
+
+    def _get_neighbors_by_type(
+        self,
+        G: nx.Graph,
+        node_metadata: dict,
+        node_id: int,
+        target_type: str,
+        exclude_ids: Set[int] | None = None,
+        max_neighbors: int = 5,
+    ) -> List[LinkNeighborInfo]:
+        """Collect neighbors of a specific type connected to *node_id*.
+
+        Returns list of ``(name, info)``.
+        """
+        if self.hop_number <= 0 or not G:
+            return []
+
+        exclude = exclude_ids or set()
+        neighbors: List[LinkNeighborInfo] = []
+
+        for nbr_id in G.neighbors(node_id):
+            if len(neighbors) >= max_neighbors:
+                break
+            if nbr_id in exclude or G.nodes[nbr_id].get("type") != target_type:
+                continue
+            neighbors.append((
+                node_metadata.get(nbr_id, {}).get("name", str(nbr_id)),
+                node_metadata.get(nbr_id, {}).get("info"),
+            ))
+
+        return neighbors
+
+    def _get_model_dataset_neighbors(
+        self, G: nx.Graph, node_metadata: dict, model_id: int,
+        exclude_ids: Set[int] | None = None, max_neighbors: int = 5,
+    ) -> List[LinkNeighborInfo]:
+        return self._get_neighbors_by_type(G, node_metadata, model_id, "dataset", exclude_ids, max_neighbors)
+
+    def _get_dataset_model_neighbors(
+        self, G: nx.Graph, node_metadata: dict, dataset_id: int,
+        exclude_ids: Set[int] | None = None, max_neighbors: int = 10,
+    ) -> List[LinkNeighborInfo]:
+        return self._get_neighbors_by_type(G, node_metadata, dataset_id, "model", exclude_ids, max_neighbors)
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def rank(
         self,
@@ -74,64 +132,58 @@ class LLMLinkRanker:
                 # Ensure retriever is available
                 if self.retriever is None:
                     from artifact_graph.utils.retriever import CandidateRetriever
-                    import numpy as np
 
-                    # Build retriever from node metadata
-                    self.retriever = CandidateRetriever(
-                        strategy="hybrid",
-                        node_metadata=node_metadata,
-                        top_k=self.rag_top_k,
-                    )
+                    self.retriever = CandidateRetriever.from_data_dir(
+                        self.data_dir, top_k=self.rag_top_k,
+                    ) if self.data_dir else CandidateRetriever(top_k=self.rag_top_k)
 
-                # Retrieve top-k candidates (always include positives)
+                # Retrieve top-k candidates purely by retrieval score — no label peeking
                 filtered_candidates, retrieval_scores = filter_candidates_by_retrieval(
                     dataset_id, all_models_to_rank, self.retriever, G
                 )
 
-                # Ensure all positives are included
-                positive_set = set(positive_models)
-                filtered_set = set(filtered_candidates)
-                missing_positives = [m for m in positive_models if m not in filtered_set]
+                original_count = len(all_models_to_rank)
+                all_models_to_rank = filtered_candidates
+                print(f"  RAG: {original_count} -> {len(all_models_to_rank)} candidates")
 
-                all_models_to_rank = filtered_candidates + missing_positives
-                print(f"  RAG: {len(positive_models + negative_candidates)} -> {len(all_models_to_rank)} candidates")
+            models_set = set(all_models_to_rank)
 
-            # Get model names, info, and neighbors
+            # --- Model-side neighbours (per model) ---
             model_info = {}
             for model_id in all_models_to_rank:
-                model_name = node_metadata.get(model_id, {}).get("name")
-                info = node_metadata.get(model_id, {}).get("info")
+                ds_neighbors = self._get_model_dataset_neighbors(
+                    G, node_metadata, model_id,
+                    exclude_ids={dataset_id},
+                    max_neighbors=5,
+                )
+                paper_neighbors = self._get_neighbors_by_type(
+                    G, node_metadata, model_id, "paper", max_neighbors=3,
+                )
+                code_neighbors = self._get_neighbors_by_type(
+                    G, node_metadata, model_id, "codebase", max_neighbors=3,
+                )
+                model_info[model_id] = (
+                    node_metadata.get(model_id, {}).get("name"),
+                    node_metadata.get(model_id, {}).get("info"),
+                    ds_neighbors,
+                    paper_neighbors,
+                    code_neighbors,
+                )
 
-                # Get model neighbors if hop_number > 0
-                dataset_neighbors = []
-                if self.hop_number > 0 and G:
-                    # Get model's connected datasets (excluding current dataset)
-                    for neighbor_id in G.neighbors(model_id):
-                        if (
-                            neighbor_id != dataset_id
-                            and G.nodes[neighbor_id].get("type") == "dataset"
-                        ):
-                            neighbor_name = node_metadata.get(neighbor_id, {}).get("name")
-                            neighbor_info = node_metadata.get(neighbor_id, {}).get("info")
-                            dataset_neighbors.append((neighbor_name, neighbor_info))
-
-                model_info[model_id] = (model_name, info, dataset_neighbors)
-
-            # Get dataset's connected models (excluding models we're ranking) for context
-            dataset_model_neighbors = []
-            if self.hop_number > 0 and G:
-                for neighbor_id in G.neighbors(dataset_id):
-                    if (
-                        neighbor_id not in all_models_to_rank
-                        and G.nodes[neighbor_id].get("type") == "model"
-                    ):
-                        neighbor_name = node_metadata.get(neighbor_id, {}).get("name")
-                        neighbor_info = node_metadata.get(neighbor_id, {}).get("info")
-                        dataset_model_neighbors.append((neighbor_name, neighbor_info))
+            # --- Dataset-side neighbours ---
+            dataset_model_neighbors = self._get_dataset_model_neighbors(
+                G, node_metadata, dataset_id,
+                exclude_ids=models_set,
+                max_neighbors=10,
+            )
+            dataset_paper_neighbors = self._get_neighbors_by_type(
+                G, node_metadata, dataset_id, "paper", max_neighbors=3,
+            )
+            dataset_code_neighbors = self._get_neighbors_by_type(
+                G, node_metadata, dataset_id, "codebase", max_neighbors=3,
+            )
 
             # Shuffle to avoid bias
-            import random
-
             random.shuffle(all_models_to_rank)
 
             prompt = self._build_ranking_prompt(
@@ -140,6 +192,8 @@ class LLMLinkRanker:
                 models_to_rank=all_models_to_rank,
                 model_info=model_info,
                 dataset_model_neighbors=dataset_model_neighbors,
+                dataset_paper_neighbors=dataset_paper_neighbors,
+                dataset_code_neighbors=dataset_code_neighbors,
             )
 
             messages = [{"role": "user", "content": prompt}]
@@ -177,20 +231,26 @@ class LLMLinkRanker:
             print(f"Error ranking for dataset {dataset_id}: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # Prompt construction
+    # ------------------------------------------------------------------
+
     def _build_ranking_prompt(
         self,
         dataset_name: str,
         dataset_info: str | None,
         models_to_rank: List[int],
-        model_info: Dict[int, Tuple[str, str, List[Tuple[str, str]]]],
-        dataset_model_neighbors: List[Tuple[str, str]],
+        model_info: Dict[int, Tuple[str, str, List[LinkNeighborInfo], List[LinkNeighborInfo], List[LinkNeighborInfo]]],
+        dataset_model_neighbors: List[LinkNeighborInfo],
+        dataset_paper_neighbors: List[LinkNeighborInfo] | None = None,
+        dataset_code_neighbors: List[LinkNeighborInfo] | None = None,
     ):
         prompt = f"Given a dataset named '{dataset_name}'"
 
         if self.use_info and dataset_info:
             prompt += f"\n\nMore information about this dataset: {dataset_info}"
 
-        # Add neighborhood context if available
+        # Dataset-side 1-hop: other models evaluated on this dataset
         if self.hop_number > 0 and dataset_model_neighbors:
             prompt += f"\n\nOther models that have been evaluated on {dataset_name}:\n"
             for neighbor_name, neighbor_info in dataset_model_neighbors:
@@ -199,23 +259,53 @@ class LLMLinkRanker:
                     prompt += f": {neighbor_info}"
                 prompt += "\n"
 
+        if self.hop_number > 0 and dataset_paper_neighbors:
+            prompt += f"\nRelated papers for {dataset_name}:\n"
+            for name, info in dataset_paper_neighbors:
+                prompt += f"- {name}"
+                if self.use_info and info:
+                    prompt += f": {info}"
+                prompt += "\n"
+
+        if self.hop_number > 0 and dataset_code_neighbors:
+            prompt += f"\nRelated code repositories for {dataset_name}:\n"
+            for name, info in dataset_code_neighbors:
+                prompt += f"- {name}"
+                if self.use_info and info:
+                    prompt += f": {info}"
+                prompt += "\n"
+
         prompt += f"\n\nPlease rank the following {len(models_to_rank)} machine learning models by how likely they are to be evaluated on this dataset (most relevant first):\n\n"
 
         for i, model_id in enumerate(models_to_rank, 1):
-            model_name, info, dataset_neighbors = model_info[model_id]
-            prompt += f"\n\n{i}. {model_name}"
-            if self.use_info and info:
-                prompt += f" - {info}"
+            m_name, m_info, ds_neighbors, paper_nbrs, code_nbrs = model_info[model_id]
+            prompt += f"\n\n{i}. {m_name}"
+            if self.use_info and m_info:
+                prompt += f" - {m_info}"
 
-            # Add model's dataset history if available
-            if self.hop_number > 0 and dataset_neighbors:
-                prompt += f"\n {model_name} was also evaluated on:"
-                for ds_name, ds_info in dataset_neighbors[:5]:  # Limit to first 5
+            # Model-side 1-hop: datasets this model was evaluated on
+            if self.hop_number > 0 and ds_neighbors:
+                prompt += f"\n {m_name} was also evaluated on:"
+                for ds_name, ds_info in ds_neighbors[:5]:
                     prompt += f"\n     * {ds_name}"
                     if self.use_info and ds_info:
                         prompt += f": {ds_info}"
-                if len(dataset_neighbors) > 5:
-                    prompt += f"\n     * and {len(dataset_neighbors) - 5} others"
+                if len(ds_neighbors) > 5:
+                    prompt += f"\n     * and {len(ds_neighbors) - 5} others"
+
+            if self.hop_number > 0 and paper_nbrs:
+                prompt += f"\n Related papers:"
+                for p_name, p_info in paper_nbrs:
+                    prompt += f"\n     * {p_name}"
+                    if self.use_info and p_info:
+                        prompt += f": {p_info}"
+
+            if self.hop_number > 0 and code_nbrs:
+                prompt += f"\n Related code repositories:"
+                for c_name, c_info in code_nbrs:
+                    prompt += f"\n     * {c_name}"
+                    if self.use_info and c_info:
+                        prompt += f": {c_info}"
 
             prompt += "\n"
 
@@ -229,12 +319,16 @@ class LLMLinkRanker:
         The 'ranked_models' list should contain all model names in order from most to least likely to be evaluated on the dataset."""
         return prompt
 
+    # ------------------------------------------------------------------
+    # Response parsing
+    # ------------------------------------------------------------------
+
     def _parse_ranking_answer(
         self,
         answer: str,
         dataset_name: str,
         original_model_ids: List[int],
-        model_info: Dict[int, Tuple[str, str, List[Tuple[str, str]]]],
+        model_info: Dict[int, Tuple[str, str, List[LinkNeighborInfo]]],
     ):
         result_json = parse_llm_response_to_json(answer)
         if not result_json:
@@ -248,7 +342,7 @@ class LLMLinkRanker:
             reasoning = result_json.get("reasoning", "")
 
             # Create name to ID mapping
-            name_to_id = {name: mid for mid, (name, _, _) in model_info.items()}
+            name_to_id = {info[0]: mid for mid, info in model_info.items()}
             original_names = [model_info[mid][0] for mid in original_model_ids]
 
             # Validate that all original models are present in ranking

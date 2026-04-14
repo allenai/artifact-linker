@@ -17,6 +17,9 @@ def _load_graph_raw_data(graph_data_dir: str) -> Tuple[Dict, np.ndarray, Dict]:
 
     edges_data = np.load(data_path / "edges.npz")
     edges = edges_data["edges"]
+    # Ensure edges are in (N, 2) format
+    if edges.ndim == 2 and edges.shape[0] == 2 and edges.shape[1] != 2:
+        edges = edges.T
 
     with open(data_path / "edge_metadata_normalized.json", "r") as f:
         edge_data = json.load(f)

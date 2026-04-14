@@ -23,6 +23,7 @@ class BaselineLinkRanker:
         "preferential_attachment",
         "resource_allocation",
         "katz",
+        "matrix_factorization",
     ]
 
     def __init__(self, mode: str = "downloads", seed: int = 42, **kwargs):
@@ -109,6 +110,7 @@ class BaselineLinkRanker:
             "preferential_attachment": lambda m: self._pref_attach(m, dataset_id, G),
             "resource_allocation": lambda m: self._resource_alloc(m, dataset_id, G),
             "katz": lambda m: self._katz(m, dataset_id, G),
+            "matrix_factorization": lambda m: self._mf(m, dataset_id, G),
         }[self.mode]
 
         return [(m, score_fn(m)) for m in models]
@@ -139,8 +141,12 @@ class BaselineLinkRanker:
             if downloads:
                 return float(downloads)
         node_data = node_metadata.get(model_id, {})
-        downloads = node_data.get("downloads", 0) or node_data.get("info", {}).get("downloads", 0)
-        return float(downloads)
+        downloads = node_data.get("downloads", 0)
+        if not downloads:
+            info = node_data.get("info", {})
+            if isinstance(info, dict):
+                downloads = info.get("downloads", 0)
+        return float(downloads or 0)
 
     def _common_neighbors(self, model_id: int, dataset_id: int, G: nx.Graph) -> float:
         """Count common neighbors between model and dataset."""
@@ -193,35 +199,65 @@ class BaselineLinkRanker:
                 score += 1.0 / deg
         return score
 
+    def _precompute_katz(self, G: nx.Graph):
+        """Precompute Katz score matrix using sparse matrix powers (one-time cost)."""
+        nodes = sorted(G.nodes())
+        self._katz_node_to_idx = {n: i for i, n in enumerate(nodes)}
+        n = len(nodes)
+
+        A = nx.to_scipy_sparse_array(G, nodelist=nodes, format="csr", dtype=np.float64)
+        A.setdiag(0)
+        A.eliminate_zeros()
+
+        A2 = A.dot(A)
+        A3 = A2.dot(A)
+        A4 = A3.dot(A)
+
+        self._katz_matrix = (
+            (self.beta ** 2) * A2
+            + (self.beta ** 3) * A3
+            + (self.beta ** 4) * A4
+        )
+        self._katz_matrix.setdiag(0)
+        self._katz_matrix.eliminate_zeros()
+        print(f"Precomputed Katz matrix (ranker): {n} nodes, beta={self.beta}, nnz={self._katz_matrix.nnz}")
+
     def _katz(self, model_id: int, dataset_id: int, G: nx.Graph) -> float:
-        """Calculate simplified Katz-like score based on short paths."""
-        if model_id not in G or dataset_id not in G:
+        """Look up precomputed Katz score for a node pair."""
+        if not hasattr(self, "_katz_matrix") or self._katz_matrix is None:
+            self._precompute_katz(G)
+
+        i = self._katz_node_to_idx.get(model_id)
+        j = self._katz_node_to_idx.get(dataset_id)
+        if i is None or j is None:
             return 0.0
+        return float(self._katz_matrix[i, j])
 
-        # Remove direct edge if exists (we're predicting missing links)
-        has_edge = G.has_edge(model_id, dataset_id)
-        if has_edge:
-            G.remove_edge(model_id, dataset_id)
+    def _precompute_mf(self, G: nx.Graph):
+        """Precompute Matrix Factorization via truncated SVD (one-time cost)."""
+        from scipy.sparse.linalg import svds
 
-        try:
-            score = 0.0
-            # Paths of length 2: through common neighbors
-            m_neigh = set(G.neighbors(model_id))
-            d_neigh = set(G.neighbors(dataset_id))
-            path2_count = len(m_neigh & d_neigh)
-            score += (self.beta ** 2) * path2_count
+        nodes = sorted(G.nodes())
+        self._mf_node_to_idx = {n: i for i, n in enumerate(nodes)}
+        n = len(nodes)
 
-            # Paths of length 3 and 4 (simplified approximation)
-            for path_len in [3, 4]:
-                try:
-                    if nx.has_path(G, model_id, dataset_id):
-                        sp = nx.shortest_path_length(G, model_id, dataset_id)
-                        if sp == path_len:
-                            score += self.beta ** path_len
-                except Exception:
-                    pass
+        A = nx.to_scipy_sparse_array(G, nodelist=nodes, format="csr", dtype=np.float64)
+        A.setdiag(0)
+        A.eliminate_zeros()
 
-            return score
-        finally:
-            if has_edge:
-                G.add_edge(model_id, dataset_id)
+        k = min(64, min(A.shape) - 1)
+        U, S, Vt = svds(A.astype(np.float64), k=k)
+        self._mf_U_S = U * S[np.newaxis, :]  # (n, k)
+        self._mf_Vt = Vt  # (k, n)
+        print(f"Precomputed MF (ranker): {n} nodes, rank={k}")
+
+    def _mf(self, model_id: int, dataset_id: int, G: nx.Graph) -> float:
+        """Look up precomputed MF score for a node pair."""
+        if not hasattr(self, "_mf_U_S") or self._mf_U_S is None:
+            self._precompute_mf(G)
+
+        i = self._mf_node_to_idx.get(model_id)
+        j = self._mf_node_to_idx.get(dataset_id)
+        if i is None or j is None:
+            return 0.0
+        return float(self._mf_U_S[i] @ self._mf_Vt[:, j])

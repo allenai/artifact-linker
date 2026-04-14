@@ -5,7 +5,14 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    f1_score,
+    matthews_corrcoef,
+    precision_score,
+    recall_score,
+)
 
 try:
     from scipy.stats import kendalltau, spearmanr
@@ -838,12 +845,44 @@ def evaluate_ranking_performance(
 
 
 def evaluate_binary_classification(
-    true_labels: List[int], pred_labels: List[int]
+    true_labels: List[int],
+    pred_labels: List[int],
+    pred_scores: Optional[List[float]] = None,
 ) -> Dict[str, float]:
-    """Evaluate binary classification performance."""
-    return {
+    """Evaluate binary classification performance.
+
+    Metrics match the GNN evaluator: ap_auc, mcc, recall (plus accuracy, precision, f1).
+    """
+    metrics = {
         "accuracy": float(accuracy_score(true_labels, pred_labels)),
         "precision": float(precision_score(true_labels, pred_labels, zero_division=0)),
         "recall": float(recall_score(true_labels, pred_labels, zero_division=0)),
         "f1": float(f1_score(true_labels, pred_labels, zero_division=0)),
+        "mcc": float(matthews_corrcoef(true_labels, pred_labels)),
+    }
+
+    # AP-AUC (PR-AUC) requires continuous scores and both classes present
+    if pred_scores is not None and len(set(true_labels)) > 1:
+        try:
+            metrics["ap_auc"] = float(average_precision_score(true_labels, pred_scores))
+        except Exception:
+            pass
+
+    return metrics
+
+
+def evaluate_regression(
+    predicted_scores: List[float],
+    true_scores: List[float],
+) -> Dict[str, float]:
+    """Evaluate regression with shared metrics across methods."""
+    if not predicted_scores:
+        return {}
+
+    return {
+        "mse": calculate_mse(predicted_scores, true_scores),
+        "mae": calculate_mae(predicted_scores, true_scores),
+        "rmse": calculate_rmse(predicted_scores, true_scores),
+        "mape": calculate_mape(predicted_scores, true_scores),
+        "r_squared": calculate_r_squared(predicted_scores, true_scores),
     }
