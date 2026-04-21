@@ -1,112 +1,219 @@
-# python-package-template
+# artifact-linker
 
-This is a template repository for Python package projects.
+Graph-based prediction of (model, dataset) performance on HuggingFace
+artifacts. Jointly trains a GNN over a heterogeneous graph of models,
+datasets, papers, and codebases to (a) predict whether an evaluation
+edge exists (**link prediction**) and (b) regress its performance metric
+(**attribute prediction**). NLI is shipped as a case study of the
+framework.
 
-## In this README :point_down:
+Dataset on HF: **[lwaekfjlk/artifact-graph](https://huggingface.co/datasets/lwaekfjlk/artifact-graph)**
 
-- [Features](#features)
-- [Usage](#usage)
-  - [Initial setup](#initial-setup)
-  - [Creating releases](#creating-releases)
-- [Projects using this template](#projects-using-this-template)
-- [FAQ](#faq)
-- [Contributing](#contributing)
+---
 
-## Features
+## 1. Setup
 
-This template repository comes with all of the boilerplate needed for:
+```bash
+# Clone
+git clone https://github.com/lwaekfjlk/artifact-linker.git
+cd artifact-linker
 
-⚙️ Robust (and free) CI with [GitHub Actions](https://github.com/features/actions):
-  - Unit tests ran with [PyTest](https://docs.pytest.org) against multiple Python versions and operating systems.
-  - Type checking with [mypy](https://github.com/python/mypy).
-  - Linting with [ruff](https://astral.sh/ruff).
-  - Formatting with [isort](https://pycqa.github.io/isort/) and [black](https://black.readthedocs.io/en/stable/).
+# Python env (conda recommended; tested with CUDA 12.1 / A100)
+conda create -n artifact-linker python=3.10 -y
+conda activate artifact-linker
+pip install -r setup-requirements.txt
+pip install -e .
+```
 
-🤖 [Dependabot](https://github.blog/2020-06-01-keep-all-your-packages-up-to-date-with-dependabot/) configuration to keep your dependencies up-to-date.
+Required env vars (only for new HF uploads / Voyage embeddings):
 
-📄 Great looking API documentation built using [Sphinx](https://www.sphinx-doc.org/en/master/) (run `make docs` to preview).
+```bash
+export HF_TOKEN=...        # for pushing to HF Hub
+export VOYAGE_API_KEY=...  # for recomputing text embeddings
+```
 
-🚀 Automatic GitHub and PyPI releases. Just follow the steps in [`RELEASE_PROCESS.md`](./RELEASE_PROCESS.md) to trigger a new release.
+---
 
-## Usage
+## 2. Download the graph from HuggingFace
 
-### Initial setup
+```bash
+python - <<'EOF'
+from huggingface_hub import snapshot_download
+path = snapshot_download(
+    "lwaekfjlk/artifact-graph",
+    repo_type="dataset",
+    local_dir="data/hf_graph",
+)
+print("Downloaded to:", path)
+EOF
+```
 
-1. [Create a new repository](https://github.com/allenai/python-package-template/generate) from this template with the desired name of your project.
+This fetches ~1 GB:
 
-    *Your project name (i.e. the name of the repository) and the name of the corresponding Python package don't necessarily need to match, but you might want to check on [PyPI](https://pypi.org/) first to see if the package name you want is already taken.*
+| subfolder | description |
+|---|---|
+| `full/` | Unsplit 14,050-node graph with all edge types |
+| `transductive/` | Transductive train/test split (14,053 nodes, augmented) |
+| `inductive/` | Inductive split with disjoint node partition |
+| `case_study_nli/` | 576 raw NLI evals + fixed aggregate + figures |
 
-2. Create a Python 3.8 or newer virtual environment.
+To map the HF layout to the paths used by the scripts below:
 
-    *If you're not sure how to create a suitable Python environment, the easiest way is using [Miniconda](https://docs.conda.io/en/latest/miniconda.html). On a Mac, for example, you can install Miniconda using [Homebrew](https://brew.sh/):*
+```bash
+ln -s data/hf_graph/transductive data/artifact_graph_splits_v3_0314_transductive
+ln -s data/hf_graph/inductive    data/artifact_graph_splits_v3_0314_inductive
+ln -s data/hf_graph/full         data/artifact_graph_data_v3_0314
+```
 
-    ```
-    brew install miniconda
-    ```
+---
 
-    *Then you can create and activate a new Python environment by running:*
+## 3. Reproduce main experiments
 
-    ```
-    conda create -n my-package python=3.9
-    conda activate my-package
-    ```
+### 3.1 All GNN + baseline results (Tables 1--3)
 
-3. Now that you have a suitable Python environment, you're ready to personalize this repository. Just run:
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_reproduce.sh
+```
 
-    ```
-    pip install -r setup-requirements.txt
-    python scripts/personalize.py
-    ```
+Runs 6 GNN backbones (GATv2, GCN, NCN, NCNC, NeoGNN, BUDDY) × 2 embedding
+modes (Voyage, random) × 2 tasks (link, attribute) × 2 splits
+(transductive, inductive), plus 13 baseline methods (downloads, Katz,
+common neighbors, matrix factorization, etc.). Output under
+`data/final_results_reproduce/`. Use `--gnn-only` or `--baseline-only` to
+subset. `--dry-run` prints commands without executing.
 
-    And then follow the prompts.
+### 3.2 Layer-count ablation (Table 4)
 
-    :pencil: *NOTE: This script will overwrite the README in your repository.*
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_ablation_layers.sh
+```
 
-4. Commit and push your changes, then make sure all GitHub Actions jobs pass.
+Re-runs the joint GATv2 trainer with `num_layers ∈ {1, 2, 3, 4}`. Outputs
+live under `data/final_results_ablation_layers/L{1..4}/`.
 
-5. (Optional) If you plan on publishing your package to PyPI, add repository secrets for `PYPI_USERNAME` and `PYPI_PASSWORD`. To add these, go to "Settings" > "Secrets" > "Actions", and then click "New repository secret".
+### 3.3 Joint GNN training (single configuration)
 
-    *If you don't have PyPI account yet, you can [create one for free](https://pypi.org/account/register/).*
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_joint_gnn.py \
+    --split-dir data/artifact_graph_splits_v3_0314_transductive \
+    --output-dir data/final_results_joint \
+    --backbone gatv2 --num-layers 3 --hidden 128 --heads 8 \
+    --epochs 1500 --lr 0.002 --attr-weight 5.0 --neg-ratio 2
+```
 
-6. (Optional) If you want to deploy your API docs to [readthedocs.org](https://readthedocs.org), go to the [readthedocs dashboard](https://readthedocs.org/dashboard/import/?) and import your new project.
+Default hyperparameters match the main paper experiments.
 
-    Then click on the "Admin" button, navigate to "Automation Rules" in the sidebar, click "Add Rule", and then enter the following fields:
+### 3.4 Novel-edge prediction (sileod × MNLI case study)
 
-    - **Description:** Publish new versions from tags
-    - **Match:** Custom Match
-    - **Custom match:** v[vV]
-    - **Version:** Tag
-    - **Action:** Activate version
+```bash
+# Graph augmentation (already applied to the shipped HF data)
+VOYAGE_API_KEY=... python scripts/add_nodes_to_graph.py
+VOYAGE_API_KEY=... python scripts/add_base_model_edge.py
 
-    Then hit "Save".
+# Inference with trained joint GATv2
+CUDA_VISIBLE_DEVICES=0 python scripts/predict_new_edge.py
+```
 
-    *After your first release, the docs will automatically be published to [your-project-name.readthedocs.io](https://your-project-name.readthedocs.io/).*
+---
 
-### Creating releases
+## 4. NLI case study
 
-Creating new GitHub and PyPI releases is easy. The GitHub Actions workflow that comes with this repository will handle all of that for you.
-All you need to do is follow the instructions in [RELEASE_PROCESS.md](./RELEASE_PROCESS.md).
+### 4.1 Download the 576 raw evaluations
 
-## Projects using this template
+```bash
+python - <<'EOF'
+from huggingface_hub import snapshot_download
+snapshot_download(
+    "lwaekfjlk/artifact-graph",
+    repo_type="dataset",
+    allow_patterns="case_study_nli/**",
+    local_dir=".",
+)
+EOF
+```
 
-Here is an incomplete list of some projects that started off with this template:
+### 4.2 Rebuild the aggregate (applies 9 bug-fixes + 3-way masks)
 
-- [ai2-tango](https://github.com/allenai/tango)
-- [cached-path](https://github.com/allenai/cached_path)
-- [beaker-py](https://github.com/allenai/beaker-py)
-- [gantry](https://github.com/allenai/beaker-gantry)
-- [ip-bot](https://github.com/abe-101/ip-bot)
-- [atty](https://github.com/mstuttgart/atty)
+```bash
+python scripts/rebuild_nli_summary.py \
+    --src case_study_nli/raw_evals \
+    --out case_study_nli/all_results_summary_fixed.json
+```
 
-☝️ *Want your work featured here? Just open a pull request that adds the link.*
+### 4.3 Regenerate figures
 
-## FAQ
+```bash
+python scripts/plot_nli_heatmap.py \
+    --input case_study_nli/all_results_summary_fixed.json \
+    --out-dir case_study_nli/figures
+python scripts/plot_nli_matrix_scree.py \
+    --input case_study_nli/all_results_summary_fixed.json \
+    --out-dir case_study_nli/figures
+```
 
-#### Should I use this template even if I don't want to publish my package?
+Produces the main heatmap (45 models × 12 datasets, masked cells in
+yellow) and the double-centered SVD scree plot
+(`data/figures/nli_matrix_scree.png`, rank-5 captures 91% of interaction
+variance).
 
-Absolutely! If you don't want to publish your package, just delete the `docs/` directory and the `release` job in [`.github/workflows/main.yml`](https://github.com/allenai/python-package-template/blob/main/.github/workflows/main.yml).
+---
 
-## Contributing
+## 5. Project layout
 
-If you find a bug :bug:, please open a [bug report](https://github.com/allenai/python-package-template/issues/new?assignees=&labels=bug&template=bug_report.md&title=).
-If you have an idea for an improvement or new feature :rocket:, please open a [feature request](https://github.com/allenai/python-package-template/issues/new?assignees=&labels=Feature+request&template=feature_request.md&title=).
+```
+artifact-linker/
+├── artifact_graph/              Main Python package
+│   ├── models/                  GATv2 / GCN / NCN / NCNC / NeoGNN / BUDDY predictors
+│   ├── training/                Joint / link / attribute trainers
+│   ├── runners/                 Train / eval orchestration
+│   └── utils/                   Graph, metric, embedding helpers
+├── scripts/
+│   ├── run_reproduce.sh         All GNN + baseline experiments
+│   ├── run_ablation_layers.sh   Layer-count ablation
+│   ├── run_joint_gnn.py         Single joint-trainer run
+│   ├── rebuild_nli_summary.py   576 raw → cleaned aggregate
+│   ├── plot_nli_heatmap.py      Heatmap figure
+│   ├── plot_nli_matrix_scree.py Scree figure
+│   ├── predict_new_edge.py      GNN inference on held-out edge
+│   ├── add_nodes_to_graph.py    Graph augmentation
+│   └── add_base_model_edge.py   Graph augmentation
+├── data/                        Data directories (symlink HF downloads here)
+│   ├── artifact_graph_data_v3_0314/
+│   ├── artifact_graph_splits_v3_0314_transductive/
+│   ├── artifact_graph_splits_v3_0314_inductive/
+│   └── figures/                 Paper figures
+├── _archive/
+│   └── old_scripts/             Standalone link / attr / ranking scripts
+│                                (invoked by run_reproduce.sh)
+└── all_results_summary_fixed.json   Fixed NLI aggregate (root copy)
+```
+
+---
+
+## 6. Data notes
+
+- **Node embeddings**: Voyage-3 (dim 1024), computed once per node from
+  GPT-summarized README / paper abstract. Random L2-normalized
+  embeddings are shipped alongside as a controlled baseline.
+- **Accuracy normalization**: metric values above 1 are rescaled to
+  `[0, 1]`; the `edge_metadata_normalized.json` files reflect this.
+- **NLI 3-way caveat**: three zero-shot classifiers can only emit 2
+  labels; their cells on MNLI / SNLI / ANLI / NLI_FEVER are masked in
+  the aggregate and cannot be compared directly to 3-way models.
+- **Reproducibility caveat**: the 576 per-cell NLI eval scripts were
+  not uniformly persisted to disk (only 119 of 576 cells retained
+  `run_eval.py`). The shipped `raw_evals/` contain predictions and
+  results only; re-running requires either the HF eval pipeline used
+  in the paper or a custom loader.
+
+---
+
+## 7. Citation
+
+```bibtex
+@article{artifact-linker,
+  title   = {...},
+  author  = {...},
+  year    = {2026},
+}
+```
