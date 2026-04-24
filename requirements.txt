@@ -10,7 +10,7 @@ arxiv>=1.4.0
 openai>=1.0.0
 litellm>=1.0.0
 google-genai>=1.0.0
-numpy>=1.21.0
+numpy>=2.0.2
 matplotlib>=3.5.0
 sentence-transformers>=3.0.0
 einops
