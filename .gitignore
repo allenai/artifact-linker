@@ -56,6 +56,7 @@ site/
 dataset_loaders/
 model_loaders/
 *.json
+!data/verification_triples.json
 
 # experiment results (agent outputs, logs, etc.)
 results/
