@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://github.com/lwaekfjlk/artifact-linker/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License"></a>
-  <a href="https://huggingface.co/datasets/lwaekfjlk/artifact-graph"><img src="https://img.shields.io/badge/🤗%20Dataset-artifact--graph-yellow" alt="HF Dataset"></a>
+  <a href="https://huggingface.co/datasets/lwaekfjlk/artifact-bench"><img src="https://img.shields.io/badge/🤗%20Dataset-artifact--graph-yellow" alt="HF Dataset"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.x-ee4c2c?logo=pytorch" alt="PyTorch"></a>
 </p>
 
@@ -35,7 +35,7 @@ pip install -e .
 python - <<'EOF'
 from huggingface_hub import snapshot_download
 snapshot_download(
-    "lwaekfjlk/artifact-graph",
+    "lwaekfjlk/artifact-bench",
     repo_type="dataset",
     local_dir="data/hf_graph",
 )
