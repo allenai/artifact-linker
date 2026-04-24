@@ -1,7 +1,7 @@
 ![Artifact Linker](assets/artifact-linker-bar.png)
 
 <h1 align="center">
-  Artifact-Linker
+  Artifact-Linker: Linking Scientific Artifacts for Automatic SOTA Discovery
 </h1>
 
 
@@ -68,6 +68,37 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_joint_gnn.py \
 
 Default hyperparameters match the main paper experiments.
 
+#### 4) Verify — run the skills-multiagent coding agent
+
+Stage 2 of the framework: top-ranked (model, dataset, metric) triples are handed to an LLM agent that writes and executes real evaluation code inside Docker. The agent's behaviour comes from two sources: (a) hardcoded `PLANNER_INSTRUCTIONS` / `EXECUTOR_INSTRUCTIONS` in `artifact_graph/evaluation_coder_skills_multiagent.py` (task-type cheat sheet, cross-cutting rules, task-specific patterns for vLLM / NER / multilabel / extractive QA), and (b) four HuggingFace skills under `skills/` (`hugging-face-datasets`, `hugging-face-dataset-viewer`, `hugging-face-evaluation`, `eval-templates`) that are packaged into the `ShellTool` at runtime.
+
+**Build the sandbox image first** (one-time, requires Docker + NVIDIA Container Toolkit):
+
+```bash
+bash build_docker.sh   # builds artifact-linker-verification:latest (CUDA 12.8)
+```
+
+Then run the agent:
+
+```bash
+export OPENAI_API_KEY="..."
+export HF_TOKEN="..."
+
+CUDA_VISIBLE_DEVICES=0 python scripts/run_evaluation_coder.py \
+    --backend skills_multiagent \
+    --mode multiturn_cachefiletool \
+    --llm-model openai/codex-5.2 \
+    --json-file results/perfect_model_dataset_metrics_v3_0120_coding_agent_filtered_hard_both_successful.json \
+    --max-samples 1000 \
+    --gpu-id 0
+```
+
+Architecture: a **PlanningAgent** inspects the model/dataset via `ShellTool` (armed with the HF skills) and emits a JSON plan; an **ExecutionAgent** writes and runs evaluation code inside the `artifact-linker-verification` container via `run_code_in_docker`; a programmatic validator checks the output and feeds errors back for the plan → execute → validate retry loop. Per-triple outputs (`agent_response.json`, `run.log`) land in the auto-named `skills_multiagent_results_*` directory; a top-level `batch_summary.json` aggregates success rates.
+
+Modes (`--mode`): `oneturn_onetool` (single turn, docker only), `multiturn_onetool` (multi-turn, docker only), `multiturn_metadatatool` (+ HF metadata tools), `multiturn_cachefiletool` (+ cached dataset/model loaders — recommended).
+
+To parallelise across GPUs, add `--num-splits 4 --gpu-ids 0,1,2,3`; the script auto-spawns one subprocess per shard.
+
 ## Architecture Overview
 
 The pipeline has four stages:
@@ -92,32 +123,6 @@ JointTrainer
 
 Each backbone is swappable via a single `--backbone` flag; the shared encoder feeds both the link and attribute heads so gradients from metric regression regularize the link-prediction representation.
 
-## Project Layout
-
-```
-artifact-linker/
-├── artifact_graph/              Main Python package
-│   ├── models/                  GATv2 / GCN / NCN / NCNC / NeoGNN / BUDDY predictors
-│   ├── training/                Joint / link / attribute trainers
-│   ├── runners/                 Train / eval orchestration
-│   └── utils/                   Graph, metric, embedding helpers
-├── scripts/
-│   ├── run_reproduce.sh         All GNN + baseline experiments
-│   ├── run_ablation_layers.sh   Layer-count ablation
-│   ├── run_joint_gnn.py         Single joint-trainer run
-│   ├── predict_new_edge.py      GNN inference on held-out edge
-│   ├── add_nodes_to_graph.py    Graph augmentation
-│   └── add_base_model_edge.py   Graph augmentation
-├── data/                        Data directories (symlink HF downloads here)
-│   ├── artifact_graph_data_v3_0314/
-│   ├── artifact_graph_splits_v3_0314_transductive/
-│   ├── artifact_graph_splits_v3_0314_inductive/
-│   └── figures/                 Paper figures
-└── _archive/
-    └── old_scripts/             Standalone link / attr / ranking scripts
-                                 (invoked by run_reproduce.sh)
-```
-
 ## Data Notes
 
 - **Node embeddings**: Voyage-3 (dim 1024), computed once per node from GPT-summarized README / paper abstract. Random L2-normalized embeddings are shipped alongside as a controlled baseline.
@@ -128,6 +133,7 @@ artifact-linker/
 ```bash
 export HF_TOKEN="..."          # for pushing to HF Hub
 export VOYAGE_API_KEY="..."    # for recomputing text embeddings
+export OPENAI_API_KEY="..."    # for the stage-2 coding agent
 ```
 
 ## Citation
