@@ -14,7 +14,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-/home/haofeiy2/anaconda3/envs/artifact-linker/bin/python}"
-SCRIPT_DIR="$ROOT/_archive/old_scripts"
+SCRIPT_DIR="$ROOT/scripts"
 
 DATA_DIR="$ROOT/data/artifact_graph_data_v3_0314"
 TRANS_DIR="$ROOT/data/artifact_graph_splits_v3_0314_transductive"
