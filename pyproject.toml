@@ -42,7 +42,7 @@ dev = [
     "build",
     "setuptools",
     "wheel",
-    "Sphinx>=6.0,<9.0",
+    "Sphinx>=7.4.7,<9.0",
     "furo==2024.8.6",
     "myst-parser>=1.0",
     "sphinx-copybutton",
