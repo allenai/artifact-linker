@@ -1,5 +1,5 @@
 torch==2.8.0
-torch-geometric>=2.0.0
+torch-geometric>=2.6.1
 networkx>=2.5
 scikit-learn>=1.0.0
 huggingface-hub>=0.15.0
