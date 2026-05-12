@@ -1,0 +1,8 @@
+Artifact Linker
+Copyright 2024-2026 The Allen Institute for Artificial Intelligence
+
+This product is licensed under the Apache License, Version 2.0. See the LICENSE
+file in this repository, or https://www.apache.org/licenses/LICENSE-2.0.
+
+Third-party dependencies and their licenses are listed in
+`dependencies_licenses.csv` at the root of this repository.

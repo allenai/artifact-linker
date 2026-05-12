@@ -1,0 +1,69 @@
+# build artifacts
+
+_archive/
+
+.eggs/
+.mypy_cache
+*.egg-info/
+build/
+dist/
+pip-wheel-metadata/
+
+
+# dev tools
+
+.envrc
+.python-version
+.idea
+.venv/
+.vscode/
+/*.iml
+pyrightconfig.json
+
+
+# jupyter notebooks
+
+.ipynb_checkpoints
+
+
+# miscellaneous
+
+.cache/
+doc/_build/
+*.swp
+.DS_Store
+**/data/*
+
+# python
+
+*.pyc
+*.pyo
+__pycache__
+
+
+# testing and continuous integration
+
+.coverage
+.pytest_cache/
+.benchmarks
+
+# documentation build artifacts
+
+docs/build
+site/
+
+# data collection artifacts
+dataset_loaders/
+model_loaders/
+*.json
+!data/verification_triples.json
+
+# experiment results (agent outputs, logs, etc.)
+results/
+
+# archive (untracked old/deprecated files)
+_archive/old_scripts/
+_archive/plotting/
+_archive/version_specific_runs/
+_archive/one_off_fixes/
+_archive/analysis/
