@@ -2,19 +2,12 @@
 """
 Skills-augmented EvaluationCoder using OpenAI Agents SDK with ShellTool.
 
-Architecture: Two agents (Planner + Executor) + programmatic validation.
-  - PlanningAgent: researches model/dataset, inspects real data via ShellTool
-  - ExecutionAgent: writes and runs evaluation code, debugs with ShellTool
-  - Programmatic validation via _inspect_evaluation_results (no ValidationAgent)
-  - Simple retry loop: plan → execute → validate → fix → retry
-
-This keeps the forced execution separation (planner plans, executor codes) while
-eliminating the ValidationAgent overhead and simplifying the loop.
+Two agents (Planner + Executor) + programmatic validation via
+_inspect_evaluation_results. Simple retry loop: plan → execute → validate → fix.
 """
 
 import asyncio
 import base64
-import hashlib
 import io
 import json
 import os
@@ -22,7 +15,7 @@ import re
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -30,19 +23,21 @@ from agents import (
     Agent,
     Runner,
     ShellTool,
-    ShellToolContainerAutoEnvironment,
     ShellToolInlineSkill,
     ShellToolSkillReference,
     WebSearchTool,
 )
 
 from artifact_graph.evaluation_coder_multiagent import (
-    MultiAgentEvaluationCoder,
+    CoderMode,
+    MODE_CONFIG,
     _create_dataset_loader_tool,
     _create_model_loader_tool,
     _create_search_similar_evaluations_tool,
+    _extract_usage,
     _inspect_evaluation_results,
-    check_code_legitimacy,
+    _normalize_plan,
+    _set_gpu_id,
     get_dataset_metadata,
     get_dataset_readme,
     get_model_labels,
@@ -52,10 +47,6 @@ from artifact_graph.evaluation_coder_multiagent import (
     read_file,
     run_code_in_docker,
     save_file,
-)
-from artifact_graph.evaluation_coder_tools import (
-    CoderMode,
-    _set_gpu_id,
     tool_check_code_legitimacy,
 )
 
@@ -256,17 +247,9 @@ def _upload_skill_hosted(skill_dir: str, api_key: str) -> ShellToolSkillReferenc
 
 
 class SkillsMultiAgentEvaluationCoder:
-    """
-    Two-agent EvaluationCoder with HF skills and programmatic validation.
+    """Two-agent EvaluationCoder with HF skills and programmatic validation."""
 
-    Architecture:
-      - PlanningAgent: researches model/dataset, inspects data via ShellTool
-      - ExecutionAgent: writes & runs code, debugs with ShellTool
-      - Programmatic validation: _inspect_evaluation_results() (no ValidationAgent)
-      - Retry loop: plan → execute → validate → fix → retry
-    """
-
-    MODE_CONFIG = MultiAgentEvaluationCoder.MODE_CONFIG
+    MODE_CONFIG = MODE_CONFIG
 
     def __init__(
         self,
@@ -402,53 +385,6 @@ class SkillsMultiAgentEvaluationCoder:
         ))
 
     # ── Core loop ─────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _extract_usage(result: Any) -> Dict[str, int]:
-        inp = out = 0
-        try:
-            for item in result.raw_responses:
-                usage = getattr(item, "usage", None)
-                if usage:
-                    inp += getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0)
-                    out += getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0)
-        except Exception:
-            pass
-        return {"input": inp, "output": out, "total": inp + out}
-
-    @staticmethod
-    def _safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
-        if not text:
-            return None
-        try:
-            obj = json.loads(text)
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            pass
-        m = re.search(r"\{[\s\S]*\}", text)
-        if m:
-            try:
-                obj = json.loads(m.group(0))
-                return obj if isinstance(obj, dict) else None
-            except Exception:
-                return None
-        return None
-
-    @staticmethod
-    def _normalize_plan(plan_text: str) -> Dict[str, Any]:
-        parsed_obj = SkillsMultiAgentEvaluationCoder._safe_json_parse(plan_text)
-        parsed = parsed_obj or {}
-        defaults = {
-            "framework": "other", "pip_deps": [], "dataset_split": "test",
-            "input_fields": [], "label_field": "label", "trust_remote_code": False,
-            "model_loading_hint": "", "dataset_loading_hint": "",
-            "label_mapping_hint": "", "known_pitfalls": [],
-            "model_metadata_summary": {}, "dataset_metadata_summary": {},
-        }
-        for k, v in defaults.items():
-            parsed.setdefault(k, v)
-        parsed["_plan_parse_ok"] = bool(parsed_obj)
-        return parsed
 
     @staticmethod
     def _analyze_predictions(output_dir: str, metric: str) -> str:
@@ -608,17 +544,17 @@ class SkillsMultiAgentEvaluationCoder:
                     plan_result = await Runner.run(self.planning_agent, plan_prompt, max_turns=8)
                 except Exception as e:
                     print(f"   ⚠️ PlanningAgent error: {e}")
-                    plan_data = self._normalize_plan("{}")
+                    plan_data = _normalize_plan("{}")
                     plan_str = json.dumps(plan_data, ensure_ascii=False, indent=2)
                     lessons_learned.append(f"PlanningAgent crashed: {str(e)[:100]}")
                     continue
                 plan_elapsed = time.time() - t0
-                plan_usage = self._extract_usage(plan_result)
+                plan_usage = _extract_usage(plan_result)
                 for k in ("input", "output", "total"):
                     total_tokens[k] += plan_usage.get(k, 0)
 
                 raw_plan = str(plan_result.final_output or "{}")
-                plan_data = self._normalize_plan(raw_plan)
+                plan_data = _normalize_plan(raw_plan)
                 plan_str = json.dumps(plan_data, ensure_ascii=False, indent=2)
                 print(f"   Plan: {plan_str[:300]}")
                 print(f"   [tokens] in={plan_usage['input']} out={plan_usage['output']} | {plan_elapsed:.1f}s")
@@ -655,7 +591,7 @@ REQUIREMENTS:
                 replan_needed = False
                 continue
             exec_elapsed = time.time() - t0
-            exec_usage = self._extract_usage(exec_result)
+            exec_usage = _extract_usage(exec_result)
             for k in ("input", "output", "total"):
                 total_tokens[k] += exec_usage.get(k, 0)
 
