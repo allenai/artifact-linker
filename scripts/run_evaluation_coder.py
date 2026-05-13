@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Run evaluation coder with configurable modes.
+Run skills-multiagent evaluation coder with configurable modes.
 
-Supports four modes:
+Modes:
 - oneturn_onetool: Single turn with only run_code_in_docker (max_steps=1)
 - multiturn_onetool: Multi-turn with only run_code_in_docker
 - multiturn_metadatatool: Multi-turn with metadata tools + base_tools
@@ -13,78 +13,40 @@ import os
 import sys
 import json
 import re
-import logging
 import argparse
 from pathlib import Path
-from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Any
 
-# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Setup HF token before importing anything else
-os.environ['HF_TOKEN'] = "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"
+if not os.environ.get('HF_TOKEN'):
+    raise RuntimeError("HF_TOKEN env var is required. Set it before running.")
 
-from artifact_graph.evaluation_coder_smolagent import EvaluationCoder, CoderMode
-from artifact_graph.evaluation_coder_openai import OpenAIEvaluationCoder
-from artifact_graph.evaluation_coder_multiagent import MultiAgentEvaluationCoder
 from artifact_graph.evaluation_coder_skills_multiagent import SkillsMultiAgentEvaluationCoder
 
 
-# ============== Logging Setup ==============
-
-LOG_FILE_PATH = None
-
-
-def setup_logging(output_dir: str, log_to_file: bool = True):
-    """Setup logging to both console and file."""
-    global LOG_FILE_PATH
-    
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
-    
-    if log_to_file and output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        LOG_FILE_PATH = os.path.join(output_dir, f"run_log_{timestamp}.log")
-        file_handler = logging.FileHandler(LOG_FILE_PATH, encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-        print(f"📝 Logging to: {LOG_FILE_PATH}")
-
-
 class TeeOutput:
-    """Tee stdout/stderr to both console and log file."""
-    def __init__(self, log_file_path: str, stream):
+    def __init__(self, log_file, stream):
         self.terminal = stream
-        self.log_file = open(log_file_path, 'a', encoding='utf-8')
-    
+        self.log_file = log_file
+
     def write(self, message):
         self.terminal.write(message)
         self.log_file.write(message)
         self.log_file.flush()
-    
+
     def flush(self):
         self.terminal.flush()
         self.log_file.flush()
-    
-    def close(self):
-        self.log_file.close()
 
 
 # ============== Batch Evaluation Helpers ==============
 
 def load_evaluation_triples(
-    json_file: str, 
-    dataset_filter: Optional[str] = None, 
+    json_file: str,
+    dataset_filter: Optional[str] = None,
     limit: int = 0
 ) -> List[Tuple[str, str, str]]:
-    """Load model/dataset/metric triples from a JSON file."""
     with open(json_file, "r") as f:
         data = json.load(f)
     
@@ -112,7 +74,6 @@ def load_evaluation_triples(
 
 
 def make_safe_dirname(model: str, dataset: str, metric: str) -> str:
-    """Create a safe directory name from model/dataset/metric."""
     safe_dir = f"{model}_{dataset}_{metric}"
     safe_dir = re.sub(r"[^a-zA-Z0-9._-]", "_", safe_dir)
     safe_dir = re.sub(r"_+", "_", safe_dir)
@@ -120,8 +81,6 @@ def make_safe_dirname(model: str, dataset: str, metric: str) -> str:
 
 
 def check_existing_results(output_dir: str) -> Optional[Dict[str, Any]]:
-    """Check if agent_response.json or results.json already exists (supports both smolagent and multiagent backends)."""
-    # Primary: agent_response.json (smolagent backend)
     response_file = os.path.join(output_dir, "agent_response.json")
     if os.path.exists(response_file):
         try:
@@ -130,7 +89,7 @@ def check_existing_results(output_dir: str) -> Optional[Dict[str, Any]]:
         except Exception as e:
             print(f"⚠️ Failed to read existing agent response: {e}")
 
-    # Fallback: results.json (multiagent backend)
+    # Fallback: results.json
     results_file = os.path.join(output_dir, "results.json")
     if os.path.exists(results_file):
         try:
@@ -158,23 +117,8 @@ class EvaluationLogger:
         self.log_file = open(self.log_path, 'w', encoding='utf-8')
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
-        
-        class DualWriter:
-            def __init__(self, terminal, log_file):
-                self.terminal = terminal
-                self.log_file = log_file
-            
-            def write(self, message):
-                self.terminal.write(message)
-                self.log_file.write(message)
-                self.log_file.flush()
-            
-            def flush(self):
-                self.terminal.flush()
-                self.log_file.flush()
-        
-        sys.stdout = DualWriter(self.original_stdout, self.log_file)
-        sys.stderr = DualWriter(self.original_stderr, self.log_file)
+        sys.stdout = TeeOutput(self.log_file, self.original_stdout)
+        sys.stderr = TeeOutput(self.log_file, self.original_stderr)
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -192,7 +136,6 @@ def save_batch_summary(
     total: int,
     success_count: int
 ) -> str:
-    """Save batch evaluation summary to JSON file."""
     summary_path = os.path.join(output_dir, "batch_summary.json")
     with open(summary_path, "w") as f:
         json.dump({
@@ -211,55 +154,41 @@ def batch_evaluate(
     json_file: str,
     mode: str,
     llm_model: str = "gpt-4o",
-    output_dir: str = "smolagent_results",
+    output_dir: str = "skills_multiagent_results",
     gpu_id: int = 0,
     limit: int = 0,
     dataset_filter: str = None,
     max_steps: int = None,
     max_samples: int = 200,
-    backend: str = "smolagents",
     num_splits: int = 1,
     split_id: int = 0,
 ):
     """Batch evaluate multiple model/dataset/metric combinations.
-    
+
     num_splits / split_id: shard the triple list into num_splits parts and
     only process the split_id-th shard (0-indexed). Run multiple processes
     in parallel each with a different split_id to parallelise the full run.
     """
-    
-    # Load triples
+
     triples = load_evaluation_triples(json_file, dataset_filter, limit)
-    
+
     if not triples:
         print("❌ No evaluable triples found.")
         if dataset_filter:
             print(f"   Dataset filter '{dataset_filter}' may not match any entries.")
         return
 
-    # ── Shard the triple list ──────────────────────────────────────────────────
     if num_splits > 1:
         triples = [t for i, t in enumerate(triples) if i % num_splits == split_id]
         print(f"🔀 Shard {split_id}/{num_splits}: processing {len(triples)} triples")
-    
+
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Get loaders directories
+
     script_dir = Path(__file__).parent
     dataset_loaders_dir = str(script_dir / "dataset_loaders")
     model_loaders_dir = str(script_dir / "model_loaders")
-    
-    # Create coder based on backend
-    if backend == "openai":
-        coder_cls = OpenAIEvaluationCoder
-    elif backend == "multiagent":
-        coder_cls = MultiAgentEvaluationCoder
-    elif backend == "skills_multiagent":
-        coder_cls = SkillsMultiAgentEvaluationCoder
-    else:
-        coder_cls = EvaluationCoder
-    print(f"🔧 Backend: {backend} ({coder_cls.__name__})")
-    coder = coder_cls.from_mode_string(
+
+    coder = SkillsMultiAgentEvaluationCoder.from_mode_string(
         mode_str=mode,
         llm_model=llm_model,
         gpu_id=gpu_id,
@@ -374,13 +303,6 @@ Examples:
                         help="Override max steps for the mode")
     parser.add_argument("--max-samples", type=int, default=1000,
                         help="Max samples to evaluate per dataset (-1 for no limit)")
-    parser.add_argument("--backend", default="smolagents",
-                        choices=["smolagents", "openai", "multiagent", "skills_multiagent"],
-                        help="Agent backend: smolagents (default), openai (OpenAI Agents SDK), "
-                             "multiagent (Planning+Execution+Validation agents), "
-                             "or skills_multiagent (multiagent with HF skills via ShellTool)")
-    parser.add_argument("--no-log-file", action="store_true",
-                        help="Disable logging to file")
     parser.add_argument("--num-splits", type=int, default=1,
                         help="Split dataset into N shards and run all in parallel (default: 1 = no split)")
     parser.add_argument("--split-id", type=int, default=None,
@@ -390,46 +312,28 @@ Examples:
 
     args = parser.parse_args()
 
-    # ── Auto-parallel: spawn subprocesses when num_splits > 1 and no split_id given ──
     if args.num_splits > 1 and args.split_id is None:
-        # Parse gpu-ids list
         if args.gpu_ids:
             gpu_list = [int(g) for g in args.gpu_ids.split(",")]
         else:
             gpu_list = [args.gpu_id]
-        args.gpu_id = gpu_list  # pass list to _launch_parallel
+        args.gpu_id = gpu_list
         _launch_parallel(args)
         return
 
-    # Default split_id to 0 if not set
     if args.split_id is None:
         args.split_id = 0
-    
-    # Auto-generate output directory if not specified
+
     if args.output_dir is None:
-        backend_tag = {
-            "openai": "openai",
-            "multiagent": "multiagent",
-            "skills_multiagent": "skills_multiagent",
-        }.get(args.backend, "smolagent")
         llm_safe = args.llm_model.replace("/", "-")
-        args.output_dir = f"{backend_tag}_results_v3_hard_{llm_safe}_{args.mode}"
-    
-    # Setup logging
-    setup_logging(args.output_dir, log_to_file=not args.no_log_file)
-    
-    # Tee stdout/stderr to log file
-    if not args.no_log_file and LOG_FILE_PATH:
-        sys.stdout = TeeOutput(LOG_FILE_PATH, sys.stdout)
-        sys.stderr = TeeOutput(LOG_FILE_PATH, sys.stderr)
-    
+        args.output_dir = f"skills_multiagent_results_v3_hard_{llm_safe}_{args.mode}"
+
     print(f"🚀 Running EvaluationCoder")
-    print(f"   Backend: {args.backend}")
     print(f"   Mode: {args.mode}")
     print(f"   GPU: {args.gpu_id}")
     print(f"   JSON: {args.json_file}")
     print(f"   Output: {args.output_dir}")
-    
+
     batch_evaluate(
         json_file=args.json_file,
         mode=args.mode,
@@ -440,7 +344,6 @@ Examples:
         dataset_filter=args.dataset_name,
         max_steps=args.max_steps,
         max_samples=args.max_samples,
-        backend=args.backend,
         num_splits=args.num_splits,
         split_id=args.split_id,
     )
