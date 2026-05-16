@@ -34,7 +34,7 @@ dependencies = [
   "openai>=2.37",
   "tqdm>=4.60.0",
   "requests>=2.25.0",
-  "arxiv>=1.4.0",
+  "arxiv>=3.0.0",
   "matplotlib>=3.5.0",
   "pyvis>=0.2.0",
   "einops",
