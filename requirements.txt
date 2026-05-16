@@ -28,7 +28,7 @@ openai-agents==0.17.2
 openai>=2.37
 
 # --- utils ---
-tqdm>=4.60.0
+tqdm>=4.67.3
 requests>=2.25.0
 arxiv>=1.4.0
 matplotlib>=3.5.0
