@@ -60,6 +60,7 @@ model_loaders/
 
 # experiment results (agent outputs, logs, etc.)
 results/
+skills_multiagent_results_*/
 
 # archive (untracked old/deprecated files)
 _archive/old_scripts/

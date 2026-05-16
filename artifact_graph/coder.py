@@ -28,7 +28,7 @@ from agents import (
     WebSearchTool,
 )
 
-from artifact_graph.evaluation_coder_multiagent import (
+from artifact_graph.coder_tools import (
     CoderMode,
     MODE_CONFIG,
     _create_dataset_loader_tool,
@@ -44,6 +44,7 @@ from artifact_graph.evaluation_coder_multiagent import (
     get_model_metadata,
     get_model_readme,
     inspect_dataset_rows,
+    check_code_legitimacy,
     read_file,
     run_code_in_docker,
     save_file,

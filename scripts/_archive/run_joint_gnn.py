@@ -11,11 +11,10 @@ Usage:
 import argparse
 import sys
 import json
-import random
 import numpy as np
 import torch
 from pathlib import Path
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, kendalltau
 from sklearn.metrics import average_precision_score, matthews_corrcoef
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -57,7 +56,7 @@ def full_eval(model, split_dir, emb_mode_str, device):
 
     # --- Attr ranking ---
     _, _, _, ranking_data, _ = load_attribute_ranking_data(str(split_dir))
-    sp_list, hit1_list, mrr_list = [], [], []
+    sp_list, tau_list, hit1_list, mrr_list, ndcg1_list = [], [], [], [], []
     for did, mvs in ranking_data.items():
         if len(mvs) < 2:
             continue
@@ -71,9 +70,20 @@ def full_eval(model, split_dir, emb_mode_str, device):
         rho, _ = spearmanr(sc, tv)
         if not np.isnan(rho):
             sp_list.append(rho)
-        # hit@1 / mrr
+        tau, _ = kendalltau(sc, tv)
+        if not np.isnan(tau):
+            tau_list.append(tau)
+        # hit@1 / mrr / ndcg@1
         true_best = mids[np.argmax(tv)]
         ranked_mids = [m for m, _ in sorted(zip(mids, sc), key=lambda x: x[1], reverse=True)]
+        # NDCG@1: rel_top1 / ideal_rel = tv[argmax(sc)] / max(tv)
+        top1_mid = ranked_mids[0]
+        top1_rel = tv[mids.index(top1_mid)]
+        ideal_rel = max(tv)
+        if ideal_rel > 0:
+            ndcg1_list.append(top1_rel / ideal_rel)
+        else:
+            ndcg1_list.append(0.0)
         for i, m in enumerate(ranked_mids):
             if m == true_best:
                 mrr_list.append(1.0 / (i + 1))
@@ -81,16 +91,18 @@ def full_eval(model, split_dir, emb_mode_str, device):
                 break
 
     # --- Link prediction ---
-    _, _, edges_lp_full, labels_lp_full = load_link_prediction_data(str(split_dir), seed=42)
-    random.seed(42)
-    idx = list(range(len(edges_lp_full)))
-    random.shuffle(idx)
-    idx = idx[:50000]
-    edges_lp = [edges_lp_full[i] for i in idx]
-    labels_lp = [labels_lp_full[i] for i in idx]
+    # Full-set evaluation (NO subsampling) so AP/MCC use the same ~5.3M
+    # (test_pos + all non-edges) pool as the baseline pipeline, making the
+    # GNN and baseline AP columns directly comparable / same-protocol.
+    _, _, edges_lp, labels_lp = load_link_prediction_data(str(split_dir), seed=42)
     pairs_lp = torch.tensor([[m, d] for m, d in edges_lp], dtype=torch.long, device=device).t()
     with torch.no_grad():
-        lp_scores = torch.sigmoid(model.decode_link(z, pairs_lp)).cpu().numpy().flatten()
+        lp_logits = []
+        bs = 1_000_000  # chunk to bound peak memory on ~5.3M pairs
+        for i in range(0, pairs_lp.size(1), bs):
+            chunk = pairs_lp[:, i:i + bs]
+            lp_logits.append(model.decode_link(z, chunk).cpu())
+        lp_scores = torch.sigmoid(torch.cat(lp_logits)).numpy().flatten()
     lp_ap = average_precision_score(labels_lp, lp_scores)
     lp_mcc = matthews_corrcoef(labels_lp, (lp_scores > 0.5).astype(int))
 
@@ -109,10 +121,16 @@ def full_eval(model, split_dir, emb_mode_str, device):
     results = {
         "attr_mae": mae, "attr_rmse": rmse, "attr_r2": r2,
         "attr_spearman": float(np.mean(sp_list)) if sp_list else 0.0,
+        "attr_kendall_tau": float(np.mean(tau_list)) if tau_list else 0.0,
         "attr_hit1": float(np.mean(hit1_list)) if hit1_list else 0.0,
+        "attr_ndcg1": float(np.mean(ndcg1_list)) if ndcg1_list else 0.0,
         "attr_mrr": float(np.mean(mrr_list)) if mrr_list else 0.0,
         "lp_ap_auc": float(lp_ap), "lp_mcc": float(lp_mcc),
-        "lr_mrr": lr_m.get("mrr", 0), "lr_hit1": lr_m.get("hit@1", 0),
+        "lr_mrr": lr_m.get("mrr", 0),
+        "lr_hit1": lr_m.get("hit@1", 0),
+        "lr_hit5": lr_m.get("hit@5", 0),
+        "lr_recall5": lr_m.get("recall@5", 0),
+        "lr_ndcg5": lr_m.get("ndcg@5", 0),
         "lr_ndcg10": lr_m.get("ndcg@10", 0),
         "num_attr_rankings": len(sp_list),
     }

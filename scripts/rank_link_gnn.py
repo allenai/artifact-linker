@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
-"""GNN-based link ranking (uses ALL models as candidates)."""
+"""GNN link ranking — loads a trained joint checkpoint, ranks all candidates.
+
+Train the checkpoint first with scripts/train_joint_gnn.py.
+"""
 import argparse
+import json
 import sys
 from pathlib import Path
 
+import torch
+
 sys.path.append(str(Path(__file__).parent.parent))
-from artifact_graph.runners import run_link_ranking
-from artifact_graph.runners.link_runner import LinkConfig
+from artifact_graph.runners.joint_gnn_runner import load_joint_model, eval_link_ranking
+from artifact_graph.runners.runner_utils import detect_split_type
 
 
 def main():
-    p = argparse.ArgumentParser(description="GNN Link Ranking")
-    p.add_argument("--split-dir", default="../data/artifact_graph_splits_v2_1125_transductive")
-    p.add_argument("--output-dir", default="../data/final_results")
-    p.add_argument("--model-path", required=True)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--embedding-mode", choices=["random", "embedding"], default="embedding",
-                    help="Embedding mode: 'random' for ablation, 'embedding' for real node embeddings")
-    p.add_argument("--gnn-model", default="gatv2",
-                    choices=["gatv2", "gcn", "ncn", "ncnc", "neognn", "buddy"],
-                    help="GNN model architecture (default: gatv2). "
-                         "Only affects output naming; model type is auto-detected from checkpoint.")
+    p = argparse.ArgumentParser(description="GNN Link Ranking (joint checkpoint)")
+    p.add_argument("--split-dir", required=True)
+    p.add_argument("--output-dir", required=True)
+    p.add_argument("--model-path", required=True, help="joint checkpoint .pth")
+    p.add_argument("--backbone", default="gatv2", help="for output naming only")
+    p.add_argument("--embedding-mode", default="embedding", choices=["random", "embedding"])
     args = p.parse_args()
 
-    config = LinkConfig(
-        method="gnn",
-        split_dir=args.split_dir,
-        output_dir=args.output_dir,
-        model_path=args.model_path,
-        seed=args.seed,
-        embedding_mode=args.embedding_mode,
-        gnn_model=args.gnn_model,
-    )
-    run_link_ranking(config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = detect_split_type(args.split_dir)
+    emb = "random" if args.embedding_mode == "random" else "emb"
+
+    model = load_joint_model(args.model_path, device)
+    metrics = eval_link_ranking(model, Path(args.split_dir), args.embedding_mode, device)
+    print(f"[{prefix}/{args.backbone}] link ranking:",
+          {k: round(v, 4) for k, v in metrics.items()})
+
+    out = out_dir / f"{prefix}_joint_{args.backbone}_link_rankings_{emb}.json"
+    out.write_text(json.dumps({"test_metrics": metrics}, indent=2))
+    print(f"Saved: {out}")
 
 
 if __name__ == "__main__":

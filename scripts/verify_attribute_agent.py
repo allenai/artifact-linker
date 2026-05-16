@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 if not os.environ.get('HF_TOKEN'):
     raise RuntimeError("HF_TOKEN env var is required. Set it before running.")
 
-from artifact_graph.evaluation_coder_skills_multiagent import SkillsMultiAgentEvaluationCoder
+from artifact_graph.coder import SkillsMultiAgentEvaluationCoder
 
 
 class TeeOutput:
@@ -276,10 +276,10 @@ Modes:
 
 Examples:
   # Run oneshot mode on GPU 5
-  python run_evaluation_coder.py --mode oneturn_onetool --gpu-id 5
+  python verify_attribute_agent.py --mode oneturn_onetool --gpu-id 5
 
   # Run with cached loaders
-  python run_evaluation_coder.py --mode multiturn_cachefiletool --gpu-id 7
+  python verify_attribute_agent.py --mode multiturn_cachefiletool --gpu-id 7
 """
     )
     
