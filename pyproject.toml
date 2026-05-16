@@ -35,7 +35,7 @@ dependencies = [
   "tqdm>=4.60.0",
   "requests>=2.25.0",
   "arxiv>=1.4.0",
-  "matplotlib>=3.5.0",
+  "matplotlib>=3.10.9",
   "pyvis>=0.2.0",
   "einops",
   "smolagents",
