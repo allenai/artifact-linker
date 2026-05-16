@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 if not os.environ.get('HF_TOKEN'):
     raise RuntimeError("HF_TOKEN env var is required. Set it before running.")
 
-from artifact_graph.evaluation_coder_skills_multiagent import SkillsMultiAgentEvaluationCoder
+from artifact_graph.coder import SkillsMultiAgentEvaluationCoder
 
 
 class TeeOutput:

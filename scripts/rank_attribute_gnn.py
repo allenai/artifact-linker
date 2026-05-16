@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 sys.path.append(str(Path(__file__).parent.parent))
-from artifact_graph.runners.joint_gnn_eval import load_joint_model, eval_attr_ranking
+from artifact_graph.runners.joint_gnn_runner import load_joint_model, eval_attr_ranking
 from artifact_graph.runners.runner_utils import detect_split_type
 
 

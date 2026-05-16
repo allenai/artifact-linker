@@ -16,7 +16,6 @@ try:
     from .ncn_link_predictor import NCNLinkPredictor
     from .neognn_link_predictor import NeoGNNLinkPredictor
     from .buddy_link_predictor import BUDDYLinkPredictor
-    from .gnn_sota_finder import SOTAFinder
 
     GNN_AVAILABLE = True
 except ImportError as e:
@@ -43,5 +42,4 @@ if GNN_AVAILABLE:
         "NCNLinkPredictor",
         "NeoGNNLinkPredictor",
         "BUDDYLinkPredictor",
-        "SOTAFinder",
     ])
