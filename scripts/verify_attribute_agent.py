@@ -276,10 +276,10 @@ Modes:
 
 Examples:
   # Run oneshot mode on GPU 5
-  python run_evaluation_coder.py --mode oneturn_onetool --gpu-id 5
+  python verify_attribute_agent.py --mode oneturn_onetool --gpu-id 5
 
   # Run with cached loaders
-  python run_evaluation_coder.py --mode multiturn_cachefiletool --gpu-id 7
+  python verify_attribute_agent.py --mode multiturn_cachefiletool --gpu-id 7
 """
     )
     

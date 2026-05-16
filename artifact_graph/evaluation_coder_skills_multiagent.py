@@ -44,6 +44,7 @@ from artifact_graph.evaluation_coder_multiagent import (
     get_model_metadata,
     get_model_readme,
     inspect_dataset_rows,
+    check_code_legitimacy,
     read_file,
     run_code_in_docker,
     save_file,
