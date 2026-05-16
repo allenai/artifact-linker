@@ -15,7 +15,7 @@ transformers>=4.40
 sentence-transformers>=3.0
 
 # --- Stage-1 LLM (prediction/ranking via litellm) ---
-litellm>=1.50
+litellm>=1.84.0
 google-genai>=1.0.0
 
 # --- Stage-2 verification agent (OpenAI Agents SDK) ---
