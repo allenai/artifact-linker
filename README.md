@@ -105,11 +105,14 @@ Parallelise with `--num-splits 4 --gpu-ids 0,1,2,3`.
 ## Citation
 
 ```bibtex
-@software{artifact_linker2026,
-  title = {Artifact-Linker: Linking Scientific Artifacts for Automatic SOTA Discovery},
-  author = {...},
-  year = {2026},
-  url = {https://github.com/lwaekfjlk/artifact-linker}
+@misc{yu2026artifactlinkerlinkingscientificartifacts,
+      title={ArtifactLinker: Linking Scientific Artifacts for Automatic State-of-the-Art Discovery}, 
+      author={Haofei Yu and Jiaxuan You and Peter Clark and Bodhisattwa Prasad Majumder and Kyle Richardson},
+      year={2026},
+      eprint={2605.16902},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2605.16902}, 
 }
 ```
 
