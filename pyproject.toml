@@ -27,7 +27,7 @@ dependencies = [
   "networkx>=2.5",
   "huggingface-hub>=0.23",
   "transformers>=4.40",
-  "sentence-transformers>=3.0",
+  "sentence-transformers>=5.5.0",
   "litellm>=1.50",
   "google-genai>=1.0.0",
   "openai-agents==0.17.2",
