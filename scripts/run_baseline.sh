@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PY="${PYTHON:-/home/haofeiy2/.conda/envs/artifact-linker/bin/python}"
+PY="${PYTHON:-python}"
 OUT="${OUT_DIR:-$ROOT/data/baseline_sweep}"
 mkdir -p "$OUT"
 

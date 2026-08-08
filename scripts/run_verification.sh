@@ -13,7 +13,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PY="${PYTHON:-/home/haofeiy2/.conda/envs/artifact-linker/bin/python}"
+PY="${PYTHON:-python}"
 
 # Canonical Stage-2 input: verification_bench/bench.json from the HF dataset
 # (download in Quick Start step 1).
